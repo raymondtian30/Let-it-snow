@@ -33,8 +33,9 @@ enum Cfg {
     static let dockGain: CGFloat = 3.0       // snow landing on the Dock counts this many times more, so it builds up
     // Snowball physics
     static let rollFriction: CGFloat = 0.35  // rolling resistance in snow, as a share of gravity (higher = stops sooner)
+    static let rollDrag: CGFloat = 3.0       // extra slowdown that grows with speed (1/s): hard knocks die out quickly
     static let plowDrag: CGFloat = 0.8       // extra resistance from snow piled up in front of a ball
-    static let ballBounce: CGFloat = 0.35    // share of speed kept when balls bump into each other or the screen edge
+    static let ballBounce: CGFloat = 0.2     // share of speed kept when balls bump into each other or the screen edge
     static let maxRollSpeed: CGFloat = 900   // fastest a ball can roll (px/s)
     static let reposeStep: CGFloat = 1.6     // steepest snow slope: max height step between two columns (px) before it slumps
 }
@@ -743,8 +744,9 @@ final class SnowScene: SKScene {
         let dx = m.x - lastMouse.x
         lastMouse = m
         drivenBall = nil
-        guard let p = surfaceUnderMouse(m) else { activeBall = nil; return }
-        guard abs(dx) > 0.2 else { return }
+        // The ball under the mouse only rolls while the mouse moves: it stops when the mouse stops
+        guard let p = surfaceUnderMouse(m) else { activeBall?.vx = 0; activeBall = nil; return }
+        guard abs(dx) > 0.2 else { activeBall?.vx = 0; return }
 
         // Keep rolling the current ball, pick up a resting one under the mouse, or start a new one
         if let b = activeBall, b.pile === p, above(b) == nil, abs(b.x - (m.x - dx)) < b.r + 25 {   // ball was at the previous mouse x
@@ -768,8 +770,7 @@ final class SnowScene: SKScene {
         }
         guard let b = activeBall else { return }
 
-        // Move the ball to the mouse, staying on the surface. It remembers the speed, so when the mouse
-        // stops (or flicks) the ball keeps rolling on its own.
+        // Move the ball to the mouse, staying on the surface. Its speed is only used to shove other balls.
         let lo = p.minX + b.r, hi = p.minX + p.width - b.r
         let newX = lo < hi ? min(max(m.x, lo), hi) : b.x
         let moved = newX - b.x
@@ -870,7 +871,7 @@ final class SnowScene: SKScene {
     }
 
     /// The ball the mouse moves pushes any ball it touches in front of it; that ball can push the next
-    /// one, and so on. Pushed balls take on the pusher's speed, so they keep rolling after a shove.
+    /// one, and so on. Pushed balls take on the pusher's speed, so they roll on a little after a shove.
     /// A ball pushed past the end of a Dock or window pile falls off.
     func push(from b: Snowball, oldX: CGFloat, dir: CGFloat, on p: Pile) {
         // Look for balls ahead of where the pusher *was*: after a fast mouse move it may already have
@@ -898,9 +899,8 @@ final class SnowScene: SKScene {
                 }
             } else {
                 roll(o, on: p, to: need)
-                // A light ball gets knocked ahead faster than the pusher; a heavy one just moves along
-                let kick = 1 + Cfg.ballBounce * min(1, pusher.mass / o.mass)
-                if (o.vx - pusher.vx * kick) * dir < 0 { o.vx = pusher.vx * kick }
+                // A pushed ball moves along with the pusher and rolls on a little after the shove
+                if (o.vx - pusher.vx) * dir < 0 { o.vx = pusher.vx }
             }
             pusher = o
         }
@@ -924,6 +924,7 @@ final class SnowScene: SKScene {
         b.vx += ga * dt
         let f = resist * dt
         b.vx = abs(b.vx) <= f ? 0 : b.vx - (b.vx > 0 ? f : -f)
+        b.vx *= max(0, 1 - Cfg.rollDrag * dt)
         b.vx = max(-Cfg.maxRollSpeed, min(Cfg.maxRollSpeed, b.vx))
         guard b.vx != 0 else { return }
 

@@ -52,16 +52,15 @@ import SpriteKit
         }
     }
 
-    // 2. Momentum: the ball keeps rolling after the mouse stops, then comes to rest
+    // 2. The ball follows the cursor: it stops when the mouse stops
     do {
         let (sc, g) = makeScene(depth: 6)
         drive(sc, g, from: 200, to: 500, frames: 50)   // 360 px/s
         let b = sc.balls.first!
         let stopX = b.x
-        drive(sc, g, from: 500, to: 500, frames: 1, rest: 240)
-        check(b.x > stopX + 15, "ball coasts on after the mouse stops (+\(Int(b.x - stopX)) px)")
-        check(b.vx == 0, "ball comes to rest (vx = \(b.vx))")
-        check(!b.falling, "ball stays on the snow")
+        drive(sc, g, from: 500, to: 500, frames: 1, rest: 120)
+        check(abs(b.x - stopX) < 1, "ball stops when the mouse stops (drifted \(String(format: "%.1f", b.x - stopX)) px)")
+        check(b.vx == 0 && !b.falling, "ball rests on the snow")
     }
 
     // 3. Collisions: a rolling ball knocks a resting one ahead and they never overlap
@@ -69,11 +68,12 @@ import SpriteKit
         let (sc, g) = makeScene(depth: 4)
         let target = newBall(sc, g, x: 600, r: 10)
         var minGap = CGFloat.greatestFiniteMagnitude
-        drive(sc, g, from: 300, to: 560, frames: 26, rest: 240) {   // 600 px/s, into the resting ball
+        drive(sc, g, from: 300, to: 640, frames: 34, rest: 240) {   // 600 px/s, into and through the resting ball
             guard let a = sc.balls.first(where: { $0 !== target }) else { return }
             minGap = min(minGap, (target.x - a.x) - sc.touchDist(a, target))
         }
-        check(target.x > 640, "hit ball is knocked along (moved \(Int(target.x - 600)) px)")
+        check(target.x > 650, "hit ball is knocked along (moved \(Int(target.x - 600)) px)")
+        check(target.x < 820, "hit ball doesn't roll far after the shove (stopped at \(Int(target.x)), mouse stopped at 640)")
         check(minGap > -1, "balls never overlap (closest gap \(String(format: "%.1f", minGap)) px)")
         check(target.vx == 0 && !target.falling, "knocked ball comes to rest on the snow")
     }
@@ -87,7 +87,7 @@ import SpriteKit
         }
         let b = newBall(sc, g, x: 112, r: 8)
         for _ in 0..<120 { sc.stepBalls(dt) }
-        check(b.x > 140, "ball rolls downhill (moved \(Int(b.x - 112)) px)")
+        check(b.x > 127, "ball rolls down the bank toward its foot at x=134 (moved \(Int(b.x - 112)) px)")
     }
 
     // 5. Flat snow: a resting ball stays put
