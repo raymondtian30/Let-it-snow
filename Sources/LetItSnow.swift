@@ -13,6 +13,8 @@ import SpriteKit
 
 enum Cfg {
     static var targetFlakes = 260            // number of flakes falling at the same time
+    static let pileOnWindows = false         // false: snow falls in front of windows and piles only at the bottom
+                                             // of the screen and on the Dock. true: snow also piles on window tops
     static let colW: CGFloat = 3             // width of one column of the snow height map (px)
     static let windowPileMax: CGFloat = 16   // max snow height on top of a window
     static let groundPileMax: CGFloat = 34   // max snow height at the bottom of the screen
@@ -418,7 +420,8 @@ final class SnowScene: SKScene {
         let r = CGFloat.random(in: 0...1)
         let li = r < 0.40 ? 0 : (r < 0.68 ? 1 : 2)   // 40% far, 28% middle, 32% near
         let L = layers[li]
-        f.inFront = Cfg.flakesInFront && li == 0 && CGFloat.random(in: 0...1) < Cfg.inFrontFraction
+        f.inFront = !Cfg.pileOnWindows
+            || (Cfg.flakesInFront && li == 0 && CGFloat.random(in: 0...1) < Cfg.inFrontFraction)
         f.isClump = false
         f.ignoreID = -1
         f.size = CGFloat.random(in: L.size)
@@ -907,7 +910,7 @@ final class SnowScene: SKScene {
     func pollWindows(dt: CGFloat) {
         let H = size.height
         var newOrder: [(id: Int, rect: CGRect)] = []
-        if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+        if Cfg.pileOnWindows, let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
             for w in info {
                 guard let layerN = w[kCGWindowLayer as String] as? NSNumber, layerN.intValue == 0,
                       let pidN = w[kCGWindowOwnerPID as String] as? NSNumber, pidN.int32Value != myPID,

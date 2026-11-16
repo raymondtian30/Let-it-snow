@@ -1,6 +1,6 @@
 # ❄︎ Let It Snow
 
-Snow on your Mac desktop, as a menu bar app. Flakes fall over your screen and pile up on windows, the Dock and the bottom of the screen. Drag a window and the snow flies off. Move the mouse sideways over the snow to roll snowballs, hold one with the left mouse button to carry it, and stack three to build a snowman.
+Snow on your Mac desktop, as a menu bar app. Flakes fall in front of your windows and pile up at the bottom of the screen and on the Dock. (Set `pileOnWindows = true` in `Cfg` to also pile snow on window tops, which flies off when you drag the window.) Move the mouse sideways over the snow to roll snowballs, hold one with the left mouse button to carry it, and stack three to build a snowman.
 
 Based on [WinterIsComing](https://github.com/yike-shi/WINTER_IS_COMING) by Shi Yike (MIT).
 
