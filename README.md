@@ -1,6 +1,6 @@
 # ❄︎ Let It Snow
 
-Snow on your Mac desktop, as a menu bar app. Flakes fall in front of your windows and pile up at the bottom of the screen and on the Dock. (Set `pileOnWindows = true` in `Cfg` to also pile snow on window tops, which flies off when you drag the window.) Move the mouse sideways over the snow to roll snowballs, hold one with the left mouse button to carry it, and stack three to build a snowman.
+Snow on your Mac desktop, as a menu bar app. Flakes fall in front of your windows and pile up at the bottom of the screen and on the Dock. (Set `pileOnWindows = true` in `Cfg` to also pile snow on window tops, which flies off when you drag the window.) Move the mouse sideways over the snow to roll snowballs: they grow, plow a ridge, leave a packed track, keep rolling when you flick them, roll down slopes and knock into each other. Hold one with the left mouse button to carry it, and stack three to build a snowman.
 
 Based on [WinterIsComing](https://github.com/yike-shi/WINTER_IS_COMING) by Shi Yike (MIT).
 
@@ -38,7 +38,7 @@ Piling snow on the Dock needs Accessibility access: System Settings → Privacy 
 
 ## Tweaking
 
-All settings are at the top of [Sources/LetItSnow.swift](Sources/LetItSnow.swift) in `enum Cfg`.
+All settings are at the top of [Sources/LetItSnow.swift](Sources/LetItSnow.swift) in `enum Cfg`. Snowball physics (`rollFriction`, `plowDrag`, `ballBounce`, `maxRollSpeed`, `reposeStep`) is there too.
 
 ## Layout
 
@@ -46,7 +46,7 @@ All settings are at the top of [Sources/LetItSnow.swift](Sources/LetItSnow.swift
 Sources/main.swift        entry point
 Sources/LetItSnow.swift   the snow (SpriteKit scene, overlay window, menu bar item)
 Sources/Updater.swift     Check for Updates (GitHub Releases) and Launch at Login
-Tests/main.swift          updater tests, run with test.sh
+Tests/                    updater and snowball physics tests, run with test.sh
 Resources/Info.plist      bundle metadata (menu bar only, no Dock icon)
 build.sh                  compiles, assembles and ad-hoc signs the .app
 ```

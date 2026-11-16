@@ -31,6 +31,12 @@ enum Cfg {
     static let ballMaxRadius: CGFloat = 28   // and stops growing at this size
     static let maxBalls = 20                 // oldest resting snowballs are removed beyond this
     static let dockGain: CGFloat = 3.0       // snow landing on the Dock counts this many times more, so it builds up
+    // Snowball physics
+    static let rollFriction: CGFloat = 0.35  // rolling resistance in snow, as a share of gravity (higher = stops sooner)
+    static let plowDrag: CGFloat = 0.8       // extra resistance from snow piled up in front of a ball
+    static let ballBounce: CGFloat = 0.35    // share of speed kept when balls bump into each other or the screen edge
+    static let maxRollSpeed: CGFloat = 900   // fastest a ball can roll (px/s)
+    static let reposeStep: CGFloat = 1.6     // steepest snow slope: max height step between two columns (px) before it slumps
 }
 
 // MARK: - Find the Dock (needs Accessibility permission)
@@ -184,7 +190,8 @@ let layers: [Layer] = [
     weak var below: Snowball?    // the ball it is stacked on (snowman), if any
     var falling = false
     var dragging = false
-    var vel = CGVector.zero
+    var vel = CGVector.zero      // while falling
+    var vx: CGFloat = 0          // rolling speed along the surface it rests on
     var decor: SKNode?           // snowman face / scarf / buttons drawn on this ball
 
     init(body bodyTex: SKTexture, specks speckTex: SKTexture) {
@@ -204,8 +211,12 @@ let layers: [Layer] = [
         specks.size = d
     }
 
+    /// Weight, for collisions: grows with volume
+    var mass: CGFloat { r * r * r }
+
     func drop(vel v: CGVector) {
         falling = true
+        vx = 0
         dragging = false
         pile = nil
         below = nil
@@ -292,14 +303,35 @@ let layers: [Layer] = [
         dirty = true
     }
 
-    // let snow slump sideways where the slope is too steep
+    var sweepLeft = false
+
+    /// Surface height at x (the bare base where there is no column)
+    func surfaceAt(_ x: CGFloat) -> CGFloat {
+        guard let c = col(at: x), !occ[c] else { return topY }
+        return topY + h[c]
+    }
+
+    /// Add snow to a column up to its cap; returns what didn't fit
+    @discardableResult
+    func deposit(at c: Int, _ amount: CGFloat) -> CGFloat {
+        guard c >= 0, c < count, !occ[c] else { return amount }
+        let room = max(0, caps[c] - h[c])
+        let put = min(room, amount)
+        h[c] += put
+        dirty = true
+        return amount - put
+    }
+
+    // let snow slump sideways where the slope is steeper than snow can hold
     func relax() -> Bool {
         guard count > 1 else { return false }
         var moved = false
-        for i in 0..<(count - 1) where !occ[i] && !occ[i + 1] {
+        sweepLeft.toggle()
+        let idx: [Int] = sweepLeft ? Array((0..<(count - 1)).reversed()) : Array(0..<(count - 1))
+        for i in idx where !occ[i] && !occ[i + 1] {
             let d = h[i] - h[i + 1]
-            if abs(d) > 1.0 {
-                let m = (abs(d) - 1.0) * 0.3 * (d > 0 ? 1 : -1)
+            if abs(d) > Cfg.reposeStep {
+                let m = (abs(d) - Cfg.reposeStep) * 0.3 * (d > 0 ? 1 : -1)
                 h[i] = max(0, min(caps[i], h[i] - m))
                 h[i + 1] = max(0, min(caps[i + 1], h[i + 1] + m))
                 if abs(m) > 0.02 { moved = true }
@@ -351,7 +383,7 @@ final class SnowScene: SKScene {
     var t: CGFloat = 0
     let myPID = getpid()
     let world = SKNode()
-    let dockTracker = DockTracker()
+    lazy var dockTracker = DockTracker()   // created on first use: it asks for Accessibility permission
     var dockPile: Pile?
     var dockRect: CGRect?
     var dockAcc: CGFloat = 1
@@ -489,7 +521,7 @@ final class SnowScene: SKScene {
         }
         stepFlakes(dt)
         updateMouseCapture()
-        if let b = dragBall { stepDrag(b, dt) } else { updateRolling() }
+        if let b = dragBall { stepDrag(b, dt) } else { updateRolling(dt, mouse: NSEvent.mouseLocation) }
         stepBalls(dt)
     }
 
@@ -540,6 +572,7 @@ final class SnowScene: SKScene {
         removeDecor(stackOf: b)
         b.pile = nil
         b.below = nil
+        b.vx = 0
         b.dragging = true
         b.node.zPosition = 8                 // in front while dragging
         dragBall = b
@@ -691,7 +724,7 @@ final class SnowScene: SKScene {
         // stops rolling as soon as the cursor rises above the thin snow band, which makes pushing jerky.
         for b in balls where !b.falling && !b.dragging && !b.node.isHidden && b.below == nil {
             guard let p = b.pile, abs(m.x - b.x) < b.r + 8 else { continue }
-            if m.y >= p.topY - 6 && m.y <= p.topY + 2 * b.r + 8 { return p }
+            if m.y >= p.topY - 6 && m.y <= b.y + b.r + 8 { return p }
         }
         if let d = dockPile, mouseOver(d, m) { return d }
         if let dr = dockRect, dr.contains(m) { return nil }
@@ -703,10 +736,13 @@ final class SnowScene: SKScene {
         return nil
     }
 
-    func updateRolling() {
-        let m = NSEvent.mouseLocation     // same coordinates as the scene (origin bottom-left of main screen)
+    /// The ball the mouse is rolling this frame; it follows the mouse instead of coasting
+    weak var drivenBall: Snowball?
+
+    func updateRolling(_ dt: CGFloat, mouse m: CGPoint) {
         let dx = m.x - lastMouse.x
         lastMouse = m
+        drivenBall = nil
         guard let p = surfaceUnderMouse(m) else { activeBall = nil; return }
         guard abs(dx) > 0.2 else { return }
 
@@ -720,7 +756,7 @@ final class SnowScene: SKScene {
             let b = Snowball(body: ballTex!, specks: speckTex!)
             b.x = m.x
             b.pile = p
-            b.y = p.topY + b.r - 1.5
+            b.y = restY(b, on: p)
             b.layout()
             world.addChild(b.node)
             balls.append(b)
@@ -732,43 +768,110 @@ final class SnowScene: SKScene {
         }
         guard let b = activeBall else { return }
 
-        // Move the ball to the mouse, staying on the surface
+        // Move the ball to the mouse, staying on the surface. It remembers the speed, so when the mouse
+        // stops (or flicks) the ball keeps rolling on its own.
         let lo = p.minX + b.r, hi = p.minX + p.width - b.r
         let newX = lo < hi ? min(max(m.x, lo), hi) : b.x
         let moved = newX - b.x
         guard abs(moved) > 0.01 else { return }
+        if dt > 0 {
+            let v = max(-Cfg.maxRollSpeed, min(Cfg.maxRollSpeed, moved / dt))
+            b.vx = b.vx * 0.5 + v * 0.5
+        }
+        drivenBall = b
         let oldX = b.x
         roll(b, on: p, to: newX)
         push(from: b, oldX: oldX, dir: moved > 0 ? 1 : -1, on: p)
     }
 
-    /// Roll a ball to newX: it picks up snow from the columns it passes over and grows
+    /// Height of a ball's center when it rests on the snow: it sits on the highest snow under it,
+    /// sunk in a little (deeper snow = more sink), and never below the bare surface.
+    func restY(_ b: Snowball, on p: Pile) -> CGFloat {
+        let bare = p.topY + b.r - 1.5
+        guard p.count > 0 else { return bare }
+        let c0 = max(0, Int((b.x - b.r - p.minX) / Cfg.colW))
+        let c1 = min(p.count - 1, Int((b.x + b.r - p.minX) / Cfg.colW))
+        guard c0 <= c1 else { return bare }
+        var top = bare
+        for c in c0...c1 where !p.occ[c] {
+            let dx = p.colX(c) - b.x
+            let s = b.r * b.r - dx * dx
+            if s > 0 { top = max(top, p.topY + p.h[c] + s.squareRoot()) }
+        }
+        let depth = p.surfaceAt(b.x) - p.topY
+        let sink = min(b.r * 0.3, depth * 0.5)
+        return max(bare, top - sink)
+    }
+
+    /// Horizontal distance between two balls resting side by side when they touch. A small ball
+    /// sits lower than a big one, so it tucks in a little under the big ball's curve.
+    func touchDist(_ a: Snowball, _ b: Snowball) -> CGFloat { 2 * (a.r * b.r).squareRoot() }
+
+    /// Roll a ball to newX. The front of the ball picks up snow and the ball grows; a full-size ball
+    /// plows the snow ahead of it into a ridge instead. The snow under the ball is packed down,
+    /// so it leaves a track.
     func roll(_ b: Snowball, on p: Pile, to newX: CGFloat) {
         let moved = newX - b.x
         guard abs(moved) > 0.01 else { return }
-        if b.r < Cfg.ballMaxRadius {
-            var collected: CGFloat = 0
-            let from = min(b.x, newX) - b.r * 0.8
-            let to = max(b.x, newX) + b.r * 0.8
-            let frac = min(0.6, 0.6 * abs(moved) / (1.6 * b.r))
-            if let c0 = p.col(at: max(from, p.minX)), let c1 = p.col(at: min(to, p.minX + p.width - 0.1)), c0 <= c1 {
-                for c in c0...c1 where !p.occ[c] {
-                    let take = p.h[c] * frac
-                    p.h[c] -= take
-                    collected += take
-                }
-                p.dirty = true
+        let dir: CGFloat = moved > 0 ? 1 : -1
+        let frac = min(0.6, 0.6 * abs(moved) / (1.6 * b.r))
+        var scooped: CGFloat = 0
+
+        // The leading half of the ball sweeps up snow
+        let from = dir > 0 ? b.x : newX - b.r * 0.8
+        let to = dir > 0 ? newX + b.r * 0.8 : b.x
+        if let c0 = p.col(at: max(from, p.minX)), let c1 = p.col(at: min(to, p.minX + p.width - 0.1)), c0 <= c1 {
+            for c in c0...c1 where !p.occ[c] {
+                let take = p.h[c] * frac
+                p.h[c] -= take
+                scooped += take
             }
-            // Ball area grows by the snow area it picked up
-            let area = CGFloat.pi * b.r * b.r + collected * Cfg.colW * 0.8
+            p.dirty = true
+        }
+        // Behind the center the snow gets squashed: packed snow takes less room
+        let packFrom = dir > 0 ? newX - b.r * 0.6 : newX
+        let packTo = dir > 0 ? newX : newX + b.r * 0.6
+        if let c0 = p.col(at: max(packFrom, p.minX)), let c1 = p.col(at: min(packTo, p.minX + p.width - 0.1)), c0 <= c1 {
+            for c in c0...c1 where !p.occ[c] { p.h[c] *= 1 - 0.35 * frac }
+        }
+
+        // Grow by the snow picked up (ball area grows by the snow area), up to the max size
+        let room = max(0, CGFloat.pi * (Cfg.ballMaxRadius * Cfg.ballMaxRadius - b.r * b.r) / (Cfg.colW * 0.8))
+        let keep = min(scooped, room)
+        if keep > 0 {
+            let area = CGFloat.pi * b.r * b.r + keep * Cfg.colW * 0.8
             b.r = min(Cfg.ballMaxRadius, (area / .pi).squareRoot())
         }
+        // What the ball can't hold is shoved forward
+        let rest = scooped - keep
+        if rest > 0.01 { plow(rest, on: p, at: newX + dir * (b.r + Cfg.colW), dir: dir) }
+
         b.x = newX
         b.specks.zRotation -= moved / b.r     // roll
     }
 
-    /// The moving ball pushes any ball it touches in front of it; that ball can push the next one, and so on.
-    /// A ball pushed past the end of a surface falls off.
+    /// Pile snow into a ridge just ahead of a ball; whatever doesn't fit sprays up as powder
+    func plow(_ amount: CGFloat, on p: Pile, at x: CGFloat, dir: CGFloat) {
+        guard let c = p.col(at: x) else { return }
+        var spill: CGFloat = 0
+        for (k, w) in [(0, 0.5), (1, 0.3), (2, 0.2)] as [(Int, CGFloat)] {
+            spill += p.deposit(at: c + k * Int(dir), amount * w)
+        }
+        if spill > 1 { spray(at: CGPoint(x: x, y: p.surfaceAt(x)), dir: dir, speed: 160, count: min(4, Int(spill / 1.5) + 1)) }
+    }
+
+    /// A few clumps of powder kicked up and forward
+    func spray(at pt: CGPoint, dir: CGFloat, speed: CGFloat, count: Int) {
+        for _ in 0..<count where flakes.count < Cfg.maxClumps + Cfg.targetFlakes {
+            spawnClump(at: CGPoint(x: pt.x + rnd(-2, 2), y: pt.y + rnd(0, 3)),
+                       vel: CGVector(dx: dir * speed * rnd(0.3, 0.9), dy: rnd(70, 190)),
+                       sourceID: -3)
+        }
+    }
+
+    /// The ball the mouse moves pushes any ball it touches in front of it; that ball can push the next
+    /// one, and so on. Pushed balls take on the pusher's speed, so they keep rolling after a shove.
+    /// A ball pushed past the end of a Dock or window pile falls off.
     func push(from b: Snowball, oldX: CGFloat, dir: CGFloat, on p: Pile) {
         // Look for balls ahead of where the pusher *was*: after a fast mouse move it may already have
         // jumped past a ball, and that ball must still be pushed instead of being passed through.
@@ -777,16 +880,107 @@ final class SnowScene: SKScene {
             .sorted { abs($0.x - oldX) < abs($1.x - oldX) }
         var pusher = b
         for o in ahead {
-            let need = pusher.x + dir * (pusher.r + o.r)     // where o must be to just touch the pusher
+            let need = pusher.x + dir * touchDist(pusher, o)  // where o must be to just touch the pusher
             guard (need - o.x) * dir > 0 else { break }       // not touching: the chain stops here
+            if above(o) != nil {                               // a snowman doesn't budge: the pusher stops at it
+                pusher.x = o.x - dir * touchDist(pusher, o)
+                pusher.vx = 0
+                break
+            }
             let lo = p.minX + o.r, hi = p.minX + p.width - o.r
             if need < lo || need > hi {
-                o.x = need
-                o.drop(vel: CGVector(dx: dir * 140, dy: 40))  // pushed off the edge
+                if p === ground {
+                    o.x = min(max(need, lo), hi)               // the screen edge stops it
+                    o.vx = 0
+                } else {
+                    o.x = need
+                    o.drop(vel: CGVector(dx: dir * max(140, abs(pusher.vx)), dy: 40))   // pushed off the edge
+                }
             } else {
                 roll(o, on: p, to: need)
+                // A light ball gets knocked ahead faster than the pusher; a heavy one just moves along
+                let kick = 1 + Cfg.ballBounce * min(1, pusher.mass / o.mass)
+                if (o.vx - pusher.vx * kick) * dir < 0 { o.vx = pusher.vx * kick }
             }
             pusher = o
+        }
+    }
+
+    /// One frame of rolling for a ball nobody is moving: slopes speed it up, snow slows it down
+    func coast(_ b: Snowball, on p: Pile, _ dt: CGFloat) {
+        if above(b) != nil { b.vx = 0; return }        // the base of a snowman stays put
+        // Gravity along the slope; 5/7 because a solid ball spends some energy spinning
+        let hl = p.surfaceAt(b.x - b.r * 0.6), hr = p.surfaceAt(b.x + b.r * 0.6)
+        let slope = (hr - hl) / (1.2 * b.r)
+        let ga = -Cfg.gravity * (5.0 / 7.0) * slope
+        // Rolling resistance, plus more when the ball has to push through snow piled in front of it
+        let dirv: CGFloat = b.vx != 0 ? (b.vx > 0 ? 1 : -1) : (ga > 0 ? 1 : -1)
+        let ahead = max(0, p.surfaceAt(b.x + dirv * b.r * 0.9) - (b.y - b.r * 0.5))
+        let resist = Cfg.gravity * (Cfg.rollFriction + Cfg.plowDrag * min(1.5, ahead / b.r))
+        if abs(b.vx) < 3 && abs(ga) < resist {
+            b.vx = 0                                    // resting: too flat to start rolling
+            return
+        }
+        b.vx += ga * dt
+        let f = resist * dt
+        b.vx = abs(b.vx) <= f ? 0 : b.vx - (b.vx > 0 ? f : -f)
+        b.vx = max(-Cfg.maxRollSpeed, min(Cfg.maxRollSpeed, b.vx))
+        guard b.vx != 0 else { return }
+
+        var newX = b.x + b.vx * dt
+        let lo = p.minX + b.r, hi = p.minX + p.width - b.r
+        if newX < lo || newX > hi {
+            if p === ground {                           // bounce softly off the screen edge
+                newX = min(max(newX, lo), hi)
+                b.vx = -b.vx * Cfg.ballBounce
+            } else {                                    // rolls off the end of the Dock or a window
+                b.x = newX
+                b.drop(vel: CGVector(dx: b.vx, dy: 30))
+                return
+            }
+        }
+        roll(b, on: p, to: newX)
+        if abs(b.vx) > 260, CGFloat.random(in: 0...1) < dt * abs(b.vx) / 60 {
+            spray(at: CGPoint(x: b.x + (b.vx > 0 ? 1 : -1) * b.r * 0.8, y: b.y - b.r * 0.6), dir: b.vx > 0 ? 1 : -1,
+                  speed: abs(b.vx) * 0.4, count: 1)
+        }
+    }
+
+    /// Resting and rolling balls on the same surface bump into each other: they never overlap, and a
+    /// collision trades speed by weight. Snowman bases and the ball under the mouse act as immovable.
+    func collideBalls() {
+        var groups: [ObjectIdentifier: [Snowball]] = [:]
+        for b in balls where !b.falling && !b.dragging && b.below == nil {
+            guard let p = b.pile else { continue }
+            groups[ObjectIdentifier(p), default: []].append(b)
+        }
+        for (_, group) in groups where group.count > 1 {
+            let row = group.sorted { $0.x < $1.x }
+            for _ in 0..<2 {
+                for i in 0..<(row.count - 1) {
+                    let a = row[i], b = row[i + 1]
+                    let overlap = touchDist(a, b) - (b.x - a.x)
+                    guard overlap > 0 else { continue }
+                    let aFixed = a === drivenBall || above(a) != nil
+                    let bFixed = b === drivenBall || above(b) != nil
+                    if aFixed && bFixed { continue }
+                    let wa: CGFloat = aFixed ? 0 : (bFixed ? 1 : b.mass / (a.mass + b.mass))
+                    a.x -= overlap * wa
+                    b.x += overlap * (1 - wa)
+                    let closing = a.vx - b.vx
+                    guard closing > 0 else { continue }   // already moving apart
+                    let e = Cfg.ballBounce
+                    if aFixed {
+                        b.vx = a.vx + e * closing
+                    } else if bFixed {
+                        a.vx = b.vx - e * closing
+                    } else {
+                        let p = a.mass * a.vx + b.mass * b.vx, m = a.mass + b.mass
+                        a.vx = (p - b.mass * e * closing) / m
+                        b.vx = (p + a.mass * e * closing) / m
+                    }
+                }
+            }
         }
     }
 
@@ -828,12 +1022,16 @@ final class SnowScene: SKScene {
                     b.node.isHidden = under.node.isHidden
                 }
             } else if let p = b.pile {
+                if b !== drivenBall { coast(b, on: p, dt) }
+                if b.falling { i -= 1; continue }  // rolled off the end; falls from the next frame
                 if let c = p.col(at: b.x) {
                     b.node.isHidden = p.occ[c]     // hidden behind a window in front
                 } else {
                     b.node.isHidden = true
                 }
-                b.y = p.topY + b.r - 1.5           // sits slightly sunk into the snow
+                // Ride on top of the snow; ease toward it so bumps in the snow don't make it jitter
+                let target = restY(b, on: p)
+                b.y = abs(target - b.y) > b.r ? target : b.y + (target - b.y) * min(1, dt * 25)
             } else {
                 b.drop(vel: .zero)                 // lost its support (e.g. the ball below was removed)
             }
@@ -845,6 +1043,9 @@ final class SnowScene: SKScene {
             }
             i -= 1
         }
+        // Balls grow and move above, so settle contacts last, after everything has moved this frame
+        collideBalls()
+        for b in balls where !b.falling && !b.dragging { b.layout() }
     }
 
     /// First surface a falling ball hits between two heights: the Dock, then window tops (front to back),

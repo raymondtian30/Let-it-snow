@@ -1,4 +1,4 @@
-// Tests for Updater.swift. Run: zsh test.sh
+// Tests for the updater and the snowball physics. Run: zsh test.sh
 
 import Foundation
 
@@ -73,6 +73,8 @@ if CommandLine.arguments.count > 1 {
     try? p.run(); p.waitUntilExit()
     check((try? Updater.unpack(zip: badZip)) == nil, "unpack rejects a zip without the app")
 }
+
+MainActor.assumeIsolated { runPhysicsTests() }
 
 print(failures == 0 ? "All tests passed" : "\(failures) test(s) failed")
 exit(failures == 0 ? 0 : 1)
