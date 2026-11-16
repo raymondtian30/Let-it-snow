@@ -119,12 +119,12 @@ import SpriteKit
     }
 
     /// Drop a ball of radius r so its bottom starts `height` px above the snow; run until it lands
-    func dropTest(height: CGFloat, r: CGFloat) -> (SnowScene, Pile, Snowball, CGFloat) {
-        let (sc, g) = makeScene(depth: 6)
+    func dropTest(height: CGFloat, r: CGFloat, depth: CGFloat = 6, vx: CGFloat = 0) -> (SnowScene, Pile, Snowball, CGFloat) {
+        let (sc, g) = makeScene(depth: depth)
         let b = newBall(sc, g, x: 600, r: r)
         let snowBefore = g.h.reduce(0, +)
         b.y = g.surface(g.col(at: 600)!) + height + r
-        b.drop(vel: .zero)
+        b.drop(vel: CGVector(dx: vx, dy: 0))
         for _ in 0..<240 { sc.stepBalls(dt) }
         return (sc, g, b, g.h.reduce(0, +) - snowBefore)
     }
@@ -167,5 +167,95 @@ import SpriteKit
         check(sc.balls.isEmpty, "moving the mouse over the heap doesn't start a new ball (\(sc.balls.count))")
         drive(sc, g, from: 630, to: 900, frames: 30)
         check(sc.balls.count == 1, "moving away re-enables rolling new balls (\(sc.balls.count))")
+    }
+
+    // 12. Big balls are heavy for their strength: the same drop breaks a big ball but not a small one
+    do {
+        let (_, _, small, _) = dropTest(height: 70, r: 6)
+        let (_, _, big, _) = dropTest(height: 70, r: 26)
+        check(abs(small.r - 6) < 0.01, "small ball survives a 70 px drop whole (r = \(String(format: "%.1f", small.r)))")
+        check(big.r < 25.5, "big ball loses snow from the same drop (r = \(String(format: "%.1f", big.r)) of 26)")
+    }
+
+    // 13. Deep powder cushions a fall; bare ground doesn't
+    do {
+        let (_, _, bare, _) = dropTest(height: 120, r: 12, depth: 0)
+        let (_, _, soft, _) = dropTest(height: 120, r: 12, depth: 30)
+        check(bare.r < 11.5, "ball dropped on bare ground breaks (r = \(String(format: "%.1f", bare.r)))")
+        check(abs(soft.r - 12) < 0.01, "the same drop into deep snow keeps it whole (r = \(String(format: "%.1f", soft.r)))")
+    }
+
+    // 14. A landing digs a dent and pushes snow up into a rim around it
+    do {
+        let (_, g, b, _) = dropTest(height: 100, r: 12, depth: 20)
+        let mid = g.surfaceAt(600) - g.topY
+        let rim = max(g.surfaceAt(600 - 16), g.surfaceAt(600 + 16)) - g.topY
+        check(!b.falling && abs(b.r - 12) < 0.01, "ball lands whole in deep snow")
+        check(mid < 17, "landing digs a dent (\(String(format: "%.1f", mid)) px, was 20)")
+        check(rim > 20.5, "and piles a rim beside it (\(String(format: "%.1f", rim)) px, was 20)")
+    }
+
+    // 15. Only the downward speed breaks a ball: a low, fast sideways throw lands whole and rolls on
+    do {
+        let (sc, _, b, _) = dropTest(height: 40, r: 12, vx: 700)
+        check(sc.balls.contains { $0 === b } && b.r > 11.5, "sideways throw doesn't break the ball (r = \(String(format: "%.1f", b.r)))")
+        check(b.x > 700, "it keeps rolling after landing (x = \(Int(b.x)))")
+    }
+
+    /// Drop ball a (radius ra) from `height` above resting ball b (radius rb), offset sideways by dx
+    func ballOnBall(ra: CGFloat, rb: CGFloat, dx: CGFloat, height: CGFloat)
+        -> (SnowScene, Snowball, Snowball, CGFloat) {
+        let (sc, g) = makeScene(depth: 4)
+        let b = newBall(sc, g, x: 600, r: rb)
+        let a = newBall(sc, g, x: 600 + dx, r: ra)
+        a.y = b.y + rb + ra + height
+        a.drop(vel: .zero)
+        var minGap = CGFloat.greatestFiniteMagnitude
+        for _ in 0..<240 {
+            sc.stepBalls(dt)
+            if sc.balls.contains(where: { $0 === a }) && sc.balls.contains(where: { $0 === b }) {
+                minGap = min(minGap, hypot(a.x - b.x, a.y - b.y) - (a.r + b.r))
+            }
+        }
+        return (sc, a, b, minGap)
+    }
+
+    // 16. A ball falling onto another one doesn't pass through it
+    do {
+        let (sc, a, b, gap) = ballOnBall(ra: 8, rb: 12, dx: 11, height: 150)
+        check(gap > -3, "falling ball doesn't pass through a resting one (closest \(String(format: "%.1f", gap)) px)")
+        check(sc.balls.contains { $0 === a } && sc.balls.contains { $0 === b }, "a glancing hit breaks neither")
+        check(abs(a.x - b.x) >= sc.touchDist(a, b) - 1, "the falling ball ends up beside it, not inside it")
+    }
+
+    // 17. Dropped gently and centered, it lands on top and stacks
+    do {
+        let (_, a, b, _) = ballOnBall(ra: 8, rb: 12, dx: 1, height: 15)
+        check(a.below === b && !a.falling, "a gentle centered drop stacks on the ball below")
+    }
+
+    // 18. A heavy ball falling hard onto a small one crushes the small one
+    do {
+        let (sc, a, b, _) = ballOnBall(ra: 22, rb: 6, dx: 2, height: 400)
+        check(!sc.balls.contains { $0 === b }, "small ball is crushed by a heavy one falling on it")
+        check(sc.balls.contains { $0 === a } || a.falling == false, "the heavy ball carries on")
+    }
+
+    // 19. A snowman's head and middle tumbling off when the base is grabbed never get stuck inside each other
+    do {
+        let (sc, g) = makeScene(depth: 6)
+        let base = newBall(sc, g, x: 600, r: 16)
+        let mid = newBall(sc, g, x: 600, r: 12); mid.pile = nil; mid.below = base
+        let head = newBall(sc, g, x: 600, r: 9); head.pile = nil; head.below = mid
+        sc.stepBalls(dt)
+        sc.grab(base, at: CGPoint(x: 600, y: base.y))
+        for _ in 0..<240 { sc.stepBalls(dt) }
+        let rest = sc.balls.filter { $0 !== base && !$0.falling && $0.below == nil }
+        var ok = true
+        for i in 0..<rest.count { for j in (i + 1)..<rest.count where rest[i].pile === rest[j].pile {
+            if abs(rest[i].x - rest[j].x) < sc.touchDist(rest[i], rest[j]) - 1 { ok = false }
+        } }
+        check(ok, "tumbled snowman parts don't overlap after landing")
+        check(sc.balls.allSatisfy { !$0.falling }, "they all come to rest")
     }
 }

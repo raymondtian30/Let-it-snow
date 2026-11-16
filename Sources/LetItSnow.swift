@@ -38,7 +38,10 @@ enum Cfg {
     static let ballBounce: CGFloat = 0.2     // share of speed kept when balls bump into each other or the screen edge
     static let maxRollSpeed: CGFloat = 900   // fastest a ball can roll (px/s)
     static let ballCrackSpeed: CGFloat = 300 // a dropped ball lands whole below this impact speed (px/s, ~50 px drop)
-    static let ballBurstSpeed: CGFloat = 700 // and bursts completely above this (~270 px drop); in between, part breaks off
+    static let ballBurstSpeed: CGFloat = 700 // and bursts completely above this (~270 px drop); in between, part breaks off.
+                                             // Both are for a 12 px ball: bigger balls break sooner, smaller ones later
+    static let ballCushionDepth: CGFloat = 30 // this much fresh snow under a landing ball halves the impact
+    static let ballSideKeep: CGFloat = 0.7   // share of a falling ball's sideways speed it keeps rolling with on landing
     static let reposeStep: CGFloat = 1.6     // steepest snow slope: max height step between two columns (px) before it slumps
 }
 
@@ -196,6 +199,7 @@ let layers: [Layer] = [
     var vel = CGVector.zero      // while falling
     var vx: CGFloat = 0          // rolling speed along the surface it rests on
     var decor: SKNode?           // snowman face / scarf / buttons drawn on this ball
+    var crushed = false          // flattened by a ball that fell on it; removed on the next step
 
     init(body bodyTex: SKTexture, specks speckTex: SKTexture) {
         body = SKSpriteNode(texture: bodyTex)
@@ -606,11 +610,7 @@ final class SnowScene: SKScene {
         dragBall = nil
         b.dragging = false
         if let target = stackTarget(for: b) {
-            b.below = target
-            b.vel = .zero
-            let st = stack(from: base(of: b))
-            for (i, x) in st.enumerated() { x.node.zPosition = 6.5 + CGFloat(i) * 0.3 }
-            if st.count == 3 { makeSnowman(st) }
+            stack(b, on: target)
         } else {
             b.node.zPosition = 6.5
             noNewBallNear = m
@@ -630,6 +630,18 @@ final class SnowScene: SKScene {
         b.x = target.x
         b.y = target.y
         lastMouse = NSEvent.mouseLocation
+    }
+
+    /// Put b on top of target (a snowman once three are stacked)
+    func stack(_ b: Snowball, on target: Snowball) {
+        b.falling = false
+        b.pile = nil
+        b.below = target
+        b.vel = .zero
+        b.vx = 0
+        let st = stack(from: base(of: b))
+        for (i, x) in st.enumerated() { x.node.zPosition = 6.5 + CGFloat(i) * 0.3 }
+        if st.count == 3 { makeSnowman(st) }
     }
 
     /// A ball dropped just above another ball (that isn't already a full snowman) gets stacked on it
@@ -1014,7 +1026,9 @@ final class SnowScene: SKScene {
         while i >= 0 {
             let b = balls[i]
             var gone = false
-            if b.falling {
+            if b.crushed {
+                gone = true
+            } else if b.falling {
                 if b.decor != nil { b.decor?.removeFromParent(); b.decor = nil }
                 b.node.zPosition = 6.5
                 let prevBottom = b.y - b.r
@@ -1022,7 +1036,11 @@ final class SnowScene: SKScene {
                 b.x += b.vel.dx * dt
                 b.y += b.vel.dy * dt
                 b.specks.zRotation -= b.vel.dx * dt / b.r
-                if b.vel.dy < 0, let p = landingSurface(x: b.x, from: prevBottom, to: b.y - b.r) {
+                if hitBalls(b) {
+                    gone = true                      // burst against a bigger ball
+                } else if !b.falling {
+                    // landed on top of a ball and stacked there
+                } else if b.vel.dy < 0, let p = landingSurface(x: b.x, from: prevBottom, to: b.y - b.r) {
                     gone = impact(b, on: p)          // lands whole, loses a chunk, or bursts, by how hard it hits
                 } else if b.y < -b.r * 2 || b.x < -100 || b.x > size.width + 100 {
                     gone = true
@@ -1083,20 +1101,108 @@ final class SnowScene: SKScene {
 
     /// A falling ball hits a surface. Soft landings keep it whole, harder ones break off a share of its snow
     /// (the share grows with impact energy), and hard ones burst it. Returns true if the ball is gone.
+    ///
+    /// Only the downward speed counts: a sideways throw keeps rolling. Fresh snow under the ball cushions the
+    /// hit (bare ground, the Dock or a packed track hardly does). A big ball is heavy for its strength
+    /// (weight grows with r³, strength with r²), so it breaks from a lower drop than a small one.
     func impact(_ b: Snowball, on p: Pile) -> Bool {
-        let v = -b.vel.dy
-        let lo = Cfg.ballCrackSpeed, hi = Cfg.ballBurstSpeed
+        let fall = max(0, -b.vel.dy)
+        let depth = p.col(at: b.x).map { p.occ[$0] ? 0 : p.h[$0] } ?? 0
+        let v = fall * (1 - 0.5 * min(1, depth / Cfg.ballCushionDepth))
+        let k = strength(b.r)
+        let lo = Cfg.ballCrackSpeed * k, hi = Cfg.ballBurstSpeed * k
         let broken = v <= lo ? 0 : min(1, (v * v - lo * lo) / (hi * hi - lo * lo))
         let left = b.r * (1 - broken).squareRoot()          // what's left keeps (1 - broken) of the ball's area
         if broken >= 1 || left < Cfg.ballStartRadius + 1 {
             splat(b, on: p)                                  // bursts into a heap of snow
             return true
         }
+        dent(p, at: b.x, r: b.r, depth: min(0.6, 0.8 * fall / Cfg.ballBurstSpeed))
         if broken > 0 {
             splat(b, on: p, share: broken)
             b.r = left
         }
         land(b, on: p)
+        return false
+    }
+
+    /// How much harder than a 12 px ball this ball is to break (speed multiplier): small balls are tougher
+    func strength(_ r: CGFloat) -> CGFloat { (Cfg.ballStartRadius * 4 / max(r, 1)).squareRoot() }
+
+    /// A landing ball sinks into the snow: a share of the snow under it is pushed out into a rim on both
+    /// sides, and a little powder flies up
+    func dent(_ p: Pile, at x: CGFloat, r: CGFloat, depth share: CGFloat) {
+        guard share > 0.02, let c0 = p.col(at: x - r * 0.7), let c1 = p.col(at: x + r * 0.7), c0 <= c1 else { return }
+        var moved: CGFloat = 0
+        for c in c0...c1 where !p.occ[c] {
+            let take = p.h[c] * share
+            p.h[c] -= take
+            moved += take
+        }
+        guard moved > 0.01 else { return }
+        p.dirty = true
+        let w = max(1, Int(r / Cfg.colW))                  // rim width in columns, each side
+        var spill: CGFloat = 0
+        for k in 1...w {
+            spill += p.deposit(at: c0 - k, moved / CGFloat(2 * w))
+            spill += p.deposit(at: c1 + k, moved / CGFloat(2 * w))
+        }
+        let n = min(6, Int(moved / 4) + Int(spill / 2))
+        for i in 0..<n {
+            let dir: CGFloat = i % 2 == 0 ? 1 : -1
+            spawnClump(at: CGPoint(x: x + dir * r * rnd(0.6, 1), y: p.surfaceAt(x) + 1),
+                       vel: CGVector(dx: dir * rnd(40, 120), dy: rnd(60, 160)), sourceID: -3)
+        }
+    }
+
+    /// A falling ball that runs into a resting one. A hard hit crushes the smaller of the two (how hard
+    /// depends on the bigger, heavier one); a gentle, centered drop stacks it on top; anything else
+    /// glances off and nudges the ball it hit. Returns true if the falling ball itself is gone.
+    func hitBalls(_ b: Snowball) -> Bool {
+        for o in balls where o !== b && !o.falling && !o.dragging && !o.crushed && !o.node.isHidden {
+            let dx = b.x - o.x, dy = b.y - o.y
+            let d = (dx * dx + dy * dy).squareRoot(), minD = b.r + o.r
+            guard d < minD, d > 0.01 else { continue }
+            let fall = max(0, -b.vel.dy)
+            let support = base(of: o).pile ?? ground
+            if fall > Cfg.ballBurstSpeed * strength(max(b.r, o.r)), let support {
+                if b.r <= o.r {
+                    splat(b, on: support)
+                    return true
+                }
+                var a = above(o)                          // whatever sat on it tumbles off
+                while let x = a {
+                    a = above(x)
+                    x.drop(vel: CGVector(dx: rnd(-60, 60), dy: rnd(40, 100)))
+                }
+                removeDecor(stackOf: o)
+                splat(o, on: support)
+                o.crushed = true
+                o.node.isHidden = true
+                o.pile = nil
+                o.below = nil
+                b.vel.dy *= 0.5                           // crushing it took some of the fall out of the ball
+                continue
+            }
+            if dy > 0, abs(dx) < o.r * 0.5, fall < Cfg.ballCrackSpeed * 0.6, above(o) == nil,
+               o.decor == nil, stack(from: base(of: o)).count < 3 {
+                stack(b, on: o)
+                return false
+            }
+            // Glance off: move out of the other ball and bounce a little along the contact direction
+            let nx = dx / d, ny = dy / d
+            b.x = o.x + nx * minD
+            b.y = o.y + ny * minD
+            let vn = b.vel.dx * nx + b.vel.dy * ny
+            if vn < 0 {
+                b.vel.dx -= (1 + Cfg.ballBounce) * vn * nx
+                b.vel.dy -= (1 + Cfg.ballBounce) * vn * ny
+                if o.pile != nil, o.below == nil, above(o) == nil {
+                    o.vx += nx * vn * b.mass / (b.mass + o.mass)   // shoved away from the falling ball
+                }
+            }
+            if abs(nx) < 0.25 { b.vel.dx += (nx >= 0 ? 1 : -1) * 40 }   // don't balance on top: roll off
+        }
         return false
     }
 
@@ -1123,11 +1229,11 @@ final class SnowScene: SKScene {
         }
     }
 
-    /// A falling ball comes to rest on a surface and can be rolled again from there. It keeps a bit of
+    /// A falling ball comes to rest on a surface and can be rolled again from there. It keeps most of
     /// its sideways speed and rolls on.
     func land(_ b: Snowball, on p: Pile) {
         b.falling = false
-        b.vx = max(-Cfg.maxRollSpeed, min(Cfg.maxRollSpeed, b.vel.dx * 0.4))
+        b.vx = max(-Cfg.maxRollSpeed, min(Cfg.maxRollSpeed, b.vel.dx * Cfg.ballSideKeep))
         b.vel = .zero
         b.pile = p
         let lo = p.minX + b.r, hi = p.minX + p.width - b.r
