@@ -74,7 +74,10 @@ if CommandLine.arguments.count > 1 {
     check((try? Updater.unpack(zip: badZip)) == nil, "unpack rejects a zip without the app")
 }
 
-MainActor.assumeIsolated { runPhysicsTests() }
+MainActor.assumeIsolated {
+    runPhysicsTests()
+    runSleepTests()
+}
 
 print(failures == 0 ? "All tests passed" : "\(failures) test(s) failed")
 exit(failures == 0 ? 0 : 1)

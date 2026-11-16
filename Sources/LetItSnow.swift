@@ -1379,10 +1379,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             ws.addObserver(self, selector: #selector(suspendRendering), name: name, object: nil)
         }
-        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification,
+                     NSWorkspace.didWakeNotification] {
             ws.addObserver(self, selector: #selector(resumeRendering), name: name, object: nil)
         }
+        // Unlocking the screen after opening the lid is another chance to start again
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(resumeRendering),
+                                                            name: .init("com.apple.screenIsUnlocked"), object: nil)
     }
+
+    /// Paused from the menu. Kept separately because pausing the SKView also pauses the scene:
+    /// reading scene.isPaused after a sleep can't tell a menu pause from a sleep pause.
+    var userPaused = false
 
     @objc func suspendRendering() {
         (window.contentView as? SKView)?.isPaused = true
@@ -1390,8 +1398,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func resumeRendering() {
         // Stay paused if the user paused snow from the menu
-        guard !scene.isPaused else { return }
+        guard !userPaused else { return }
         (window.contentView as? SKView)?.isPaused = false
+        scene.isPaused = false
+        scene.lastT = 0          // don't count the time asleep as one long frame
     }
 
     func setupMenu() {
@@ -1438,12 +1448,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func togglePause() {
-        scene.isPaused.toggle()
-        if scene.isPaused {
+        userPaused.toggle()
+        if userPaused {
+            scene.isPaused = true
             window.orderOut(nil)
             pauseItem.title = "Resume Snow"
         } else {
             window.orderFrontRegardless()
+            resumeRendering()
             pauseItem.title = "Pause Snow"
         }
     }
