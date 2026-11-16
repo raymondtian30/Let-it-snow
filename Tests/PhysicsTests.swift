@@ -258,4 +258,29 @@ import SpriteKit
         check(ok, "tumbled snowman parts don't overlap after landing")
         check(sc.balls.allSatisfy { !$0.falling }, "they all come to rest")
     }
+
+    // 20. A partial break: the broken snow lands beside the ball, not under it, and the ball shrinks
+    // smoothly instead of popping to its new size
+    do {
+        let (sc, g) = makeScene(depth: 6)
+        let b = newBall(sc, g, x: 600, r: 12)
+        b.y = g.surface(g.col(at: 600)!) + 140 + 12
+        b.drop(vel: .zero)
+        var rs: [CGFloat] = []
+        var landedAt = -1
+        for f in 0..<240 {
+            sc.stepBalls(dt)
+            if landedAt < 0 && !b.falling { landedAt = f }
+            rs.append(b.r)
+        }
+        let final = b.r
+        check(final < 11.5, "ball loses snow in the partial break (r = \(String(format: "%.1f", final)))")
+        check(g.surfaceAt(600) - g.topY <= 6.01, "no mound under the ball (\(String(format: "%.1f", g.surfaceAt(600) - g.topY)) px, was 6)")
+        let side = stride(from: 612, through: 626, by: 2).map { max(g.surfaceAt(CGFloat(600 - ($0 - 600))), g.surfaceAt(CGFloat($0))) }.max()! - g.topY
+        check(side > 6.5, "broken snow piles up beside the ball (\(String(format: "%.1f", side)) px)")
+        var maxStep: CGFloat = 0
+        for i in 1..<rs.count { maxStep = max(maxStep, rs[i - 1] - rs[i]) }
+        check(maxStep < (12 - final) * 0.5, "ball shrinks over several frames (biggest step \(String(format: "%.2f", maxStep)) of \(String(format: "%.2f", 12 - final)))")
+        check(landedAt >= 0 && abs(rs[min(rs.count - 1, landedAt + 18)] - final) < 0.05, "and reaches its new size within 0.3 s")
+    }
 }

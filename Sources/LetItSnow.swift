@@ -200,6 +200,7 @@ let layers: [Layer] = [
     var vx: CGFloat = 0          // rolling speed along the surface it rests on
     var decor: SKNode?           // snowman face / scarf / buttons drawn on this ball
     var crushed = false          // flattened by a ball that fell on it; removed on the next step
+    var targetR: CGFloat?        // after a partial break the ball eases down to this size instead of popping
 
     init(body bodyTex: SKTexture, specks speckTex: SKTexture) {
         body = SKSpriteNode(texture: bodyTex)
@@ -870,6 +871,9 @@ final class SnowScene: SKScene {
         if keep > 0 {
             let area = CGFloat.pi * b.r * b.r + keep * Cfg.colW * 0.8
             b.r = min(Cfg.ballMaxRadius, (area / .pi).squareRoot())
+            if let t = b.targetR {                           // still shrinking after a break: grow the target too
+                b.targetR = min(b.r, ((t * t * .pi + keep * Cfg.colW * 0.8) / .pi).squareRoot())
+            }
         }
         // What the ball can't hold is shoved forward
         let rest = scooped - keep
@@ -1056,6 +1060,10 @@ final class SnowScene: SKScene {
                     b.node.isHidden = under.node.isHidden
                 }
             } else if let p = b.pile {
+                if let t = b.targetR {                     // easing down after a partial break
+                    b.r += (t - b.r) * min(1, dt * 20)
+                    if abs(b.r - t) < 0.05 { b.r = t; b.targetR = nil }
+                }
                 if b !== drivenBall { coast(b, on: p, dt) }
                 if b.falling { i -= 1; continue }  // rolled off the end; falls from the next frame
                 if let c = p.col(at: b.x) {
@@ -1119,11 +1127,36 @@ final class SnowScene: SKScene {
         }
         dent(p, at: b.x, r: b.r, depth: min(0.6, 0.8 * fall / Cfg.ballBurstSpeed))
         if broken > 0 {
-            splat(b, on: p, share: broken)
-            b.r = left
+            shed(b, on: p, share: broken)
+            b.targetR = left                                 // shrinks over the next few frames
         }
         land(b, on: p)
         return false
+    }
+
+    /// A partial break: the broken-off share of the ball flies off sideways and lands in two mounds just
+    /// beside it (more on the side it was moving toward), not under it, so the ball keeps sitting in its dent
+    func shed(_ b: Snowball, on p: Pile, share: CGFloat) {
+        let snow = CGFloat.pi * b.r * b.r * 0.7 * share / Cfg.colW     // same snow-per-area as splat
+        let bias = max(-0.5, min(0.5, b.vel.dx / 800))
+        let w = max(2, Int(b.r / Cfg.colW))                           // mound width in columns
+        var spill: CGFloat = 0
+        for (dir, part) in [(CGFloat(-1), 0.5 - bias), (CGFloat(1), 0.5 + bias)] {
+            guard let c0 = p.col(at: b.x + dir * b.r * 0.9) else { spill += snow * part; continue }
+            var sum: CGFloat = 0
+            for k in 0..<w { sum += 1 - CGFloat(k) / CGFloat(w) }
+            for k in 0..<w {
+                spill += p.deposit(at: c0 + Int(dir) * k, snow * part * (1 - CGFloat(k) / CGFloat(w)) / sum)
+            }
+        }
+        p.dirty = true
+        let n = min(16, Int(b.r * share * 1.5) + 3 + Int(spill / 2))
+        for i in 0..<n {
+            let dir: CGFloat = i % 2 == 0 ? 1 : -1
+            spawnClump(at: CGPoint(x: b.x + dir * b.r * rnd(0.5, 0.9), y: b.y - b.r * rnd(0, 0.4)),
+                       vel: CGVector(dx: dir * rnd(80, 220) + b.vel.dx * 0.3, dy: rnd(80, 220)),
+                       sourceID: -3)
+        }
     }
 
     /// How much harder than a 12 px ball this ball is to break (speed multiplier): small balls are tougher
