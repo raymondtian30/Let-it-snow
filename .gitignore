@@ -1,0 +1,7 @@
+# Build output
+/build/
+
+# Temporary / editor files
+*.new
+.DS_Store
+.vscode/
