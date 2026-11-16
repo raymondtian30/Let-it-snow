@@ -4,6 +4,16 @@ Snow on your Mac desktop, as a menu bar app. Flakes fall in front of your window
 
 Based on [WinterIsComing](https://github.com/yike-shi/WINTER_IS_COMING) by Shi Yike (MIT).
 
+## Download
+
+Get `LetItSnow-<version>.zip` from the [Releases](../../releases) page, unzip it and move **Let It Snow.app** to Applications.
+
+The app is not notarized by Apple, so the first launch is blocked. Open it once, then go to System Settings → Privacy & Security and click **Open Anyway**. Or run:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Let It Snow.app"
+```
+
 ## Build
 
 Requires macOS 13+ and the Swift compiler (`xcode-select --install`).
@@ -12,6 +22,7 @@ Requires macOS 13+ and the Swift compiler (`xcode-select --install`).
 zsh build.sh            # builds build/Let It Snow.app (universal: Apple silicon + Intel)
 zsh build.sh --run      # builds and launches it
 zsh build.sh --install  # builds, copies to ~/Applications and launches it
+zsh build.sh --zip      # builds and zips the app for a release (build/LetItSnow-<version>.zip)
 ```
 
 Use the ❄︎ in the menu bar to pause, choose light, medium or heavy snow, clear the snow, or quit.

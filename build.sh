@@ -3,6 +3,7 @@
 #   zsh build.sh            build only
 #   zsh build.sh --run      build, then launch
 #   zsh build.sh --install  build, then copy to ~/Applications and launch from there
+#   zsh build.sh --zip      build, then zip the app for a release (build/LetItSnow-<version>.zip)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -42,4 +43,11 @@ case "${1:-}" in
     cp -R "$APP" "$HOME/Applications/"
     open "$HOME/Applications/$APP_NAME.app"
     echo "Installed to ~/Applications/$APP_NAME.app" ;;
+  --zip)
+    VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist)
+    ZIP="build/$EXE-$VERSION.zip"
+    rm -f "$ZIP"
+    # ditto keeps the bundle structure and code signature intact
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    echo "Packaged $ZIP" ;;
 esac
