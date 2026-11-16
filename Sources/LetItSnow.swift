@@ -4,7 +4,7 @@
 // window. Hover over the snow to roll snowballs, push them into each other, drag them with the mouse and
 // stack three of them into a snowman. See README.md for the full list.
 // Build: zsh build.sh   (creates build/Let It Snow.app)
-// Run:   zsh build.sh --run   (a ❄︎ icon appears in the menu bar: pause / snow amount / quit)
+// Run:   zsh build.sh --run   (a ❄︎ icon appears in the menu bar: pause / snow amount / login / updates / quit)
 
 import Cocoa
 import SpriteKit
@@ -1132,12 +1132,14 @@ final class OverlayWindow: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var window: OverlayWindow!
     var scene: SnowScene!
     var statusItem: NSStatusItem!
     var pauseItem: NSMenuItem!
     var amountItems: [NSMenuItem] = []
+    var loginItem: NSMenuItem!
+    let updater = Updater()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = NSScreen.screens.first else { return }
@@ -1164,6 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrame(screen.frame, display: true)
         window.orderFrontRegardless()
 
+        LoginItem.enableOnFirstRun()
         setupMenu()
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -1216,6 +1219,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(clear)
 
         menu.addItem(.separator())
+        loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        loginItem.target = self
+        menu.addItem(loginItem)
+        let update = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "u")
+        update.target = self
+        menu.addItem(update)
+        let version = NSMenuItem(title: "Version \(Updater.currentVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+        menu.delegate = self
+
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
     }
@@ -1238,14 +1253,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func clearSnow() { scene.clearAll() }
 
+    @objc func toggleLaunchAtLogin() {
+        if let err = LoginItem.setEnabled(!LoginItem.isEnabled) {
+            let a = NSAlert()
+            a.messageText = "Couldn't change Launch at Login"
+            a.informativeText = err
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
+    }
+
+    @objc func checkForUpdates() { updater.checkForUpdates() }
+
     @objc func screensChanged() {
         guard let screen = NSScreen.screens.first else { return }
         window.setFrame(screen.frame, display: true)
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)   // no Dock icon
-app.run()
+extension AppDelegate {
+    /// Refresh the checkmark each time the menu opens; the user can also change it in System Settings
+    func menuWillOpen(_ menu: NSMenu) {
+        loginItem.state = LoginItem.isEnabled ? .on : .off
+    }
+}
