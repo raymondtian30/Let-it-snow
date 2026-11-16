@@ -117,4 +117,55 @@ import SpriteKit
         drive(sc, g, from: 400, to: 590, frames: 20, rest: 60)
         check(abs(base.x - 600) < 0.01, "snowman base doesn't move when hit")
     }
+
+    /// Drop a ball of radius r so its bottom starts `height` px above the snow; run until it lands
+    func dropTest(height: CGFloat, r: CGFloat) -> (SnowScene, Pile, Snowball, CGFloat) {
+        let (sc, g) = makeScene(depth: 6)
+        let b = newBall(sc, g, x: 600, r: r)
+        let snowBefore = g.h.reduce(0, +)
+        b.y = g.surface(g.col(at: 600)!) + height + r
+        b.drop(vel: .zero)
+        for _ in 0..<240 { sc.stepBalls(dt) }
+        return (sc, g, b, g.h.reduce(0, +) - snowBefore)
+    }
+
+    // 8. A short drop: the ball lands whole and rests on the snow
+    do {
+        let (sc, _, b, added) = dropTest(height: 25, r: 12)
+        check(sc.balls.contains { $0 === b }, "ball dropped from 25 px survives")
+        check(!b.falling && b.pile != nil, "it rests on the snow")
+        check(abs(b.r - 12) < 0.01 && added < 1, "and stays whole (r = \(String(format: "%.1f", b.r)))")
+    }
+
+    // 9. A medium drop: part of the ball breaks off into the snow, the rest lands
+    do {
+        let (sc, _, b, added) = dropTest(height: 140, r: 12)
+        check(sc.balls.contains { $0 === b } && !b.falling, "ball dropped from 140 px survives")
+        check(b.r < 11.5 && b.r > Cfg.ballStartRadius, "but loses part of its snow (r = \(String(format: "%.1f", b.r)))")
+        check(added > 1, "the broken part piles up on the snow (+\(Int(added)))")
+    }
+
+    // 10. A high drop: the ball bursts completely
+    do {
+        let (sc, _, b, added) = dropTest(height: 450, r: 12)
+        check(!sc.balls.contains { $0 === b }, "ball dropped from 450 px bursts")
+        check(added > 5, "into a heap of snow (+\(Int(added)))")
+    }
+
+    // 11. Letting go of a ball that bursts right under the cursor doesn't start a new ball there,
+    // until the cursor moves away
+    do {
+        let (sc, g) = makeScene(depth: 4)
+        let b = newBall(sc, g, x: 600, r: 12)
+        let m = CGPoint(x: 600, y: g.topY + 8)
+        sc.grab(b, at: m)
+        b.y = g.topY + 500                   // as if the drop was a hard one
+        sc.letGo(at: m)
+        for _ in 0..<240 { sc.stepBalls(dt) }
+        check(sc.balls.isEmpty, "ball burst into a heap under the cursor")
+        drive(sc, g, from: 600, to: 630, frames: 15)
+        check(sc.balls.isEmpty, "moving the mouse over the heap doesn't start a new ball (\(sc.balls.count))")
+        drive(sc, g, from: 630, to: 900, frames: 30)
+        check(sc.balls.count == 1, "moving away re-enables rolling new balls (\(sc.balls.count))")
+    }
 }
