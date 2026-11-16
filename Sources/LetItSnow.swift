@@ -42,6 +42,9 @@ enum Cfg {
                                              // Both are for a 12 px ball: bigger balls break sooner, smaller ones later
     static let ballCushionDepth: CGFloat = 30 // this much fresh snow under a landing ball halves the impact
     static let ballSideKeep: CGFloat = 0.7   // share of a falling ball's sideways speed it keeps rolling with on landing
+    static let settleRate: CGFloat = 0.012   // how fast snow settles/melts (1/s), scaled by (height / max)²: deep snow
+                                             // sinks faster, so piles level off below their max instead of a flat top
+    static let dockSettleScale: CGFloat = 8  // the Dock catches several times more snow per px (dockGain), so it settles faster
     static let reposeStep: CGFloat = 1.6     // steepest snow slope: max height step between two columns (px) before it slumps
 }
 
@@ -263,6 +266,7 @@ let layers: [Layer] = [
     let body = SKShapeNode()
     let shade = SKShapeNode()
     var dirty = false
+    var settleScale: CGFloat = 1 // multiplies Cfg.settleRate for this surface
 
     init(minX: CGFloat, topY: CGFloat, width: CGFloat, maxH: CGFloat, parent: SKNode) {
         self.minX = minX
@@ -328,6 +332,19 @@ let layers: [Layer] = [
         h[c] += put
         dirty = true
         return amount - put
+    }
+
+    /// Snow slowly settles and melts. The loss grows with (height / max)², so a thin layer barely changes
+    /// while deep snow sinks faster: the pile levels off below its max instead of hitting a flat top.
+    func settle(_ dt: CGFloat) {
+        let k = Cfg.settleRate * settleScale * dt
+        var changed = false
+        for c in 0..<count where h[c] > 0.01 {
+            let f = h[c] / caps[c]
+            h[c] -= h[c] * k * f * f
+            changed = true
+        }
+        if changed { dirty = true }
     }
 
     // let snow slump sideways where the slope is steeper than snow can hold
@@ -524,6 +541,7 @@ final class SnowScene: SKScene {
         t += dt
         pollAcc += dt
         if Double(pollAcc) >= Cfg.pollInterval {
+            settle(pollAcc)
             pollWindows(dt: pollAcc)
             pollAcc = 0
         }
@@ -1285,6 +1303,13 @@ final class SnowScene: SKScene {
     }
 
     // Read all window frames (macOS origin is top-left, SpriteKit is bottom-left, so flip y)
+    /// Every surface's snow settles a little
+    func settle(_ dt: CGFloat) {
+        ground?.settle(dt)
+        dockPile?.settle(dt)
+        for p in piles.values { p.settle(dt) }
+    }
+
     func pollWindows(dt: CGFloat) {
         let H = size.height
         var newOrder: [(id: Int, rect: CGRect)] = []
@@ -1389,6 +1414,7 @@ final class SnowScene: SKScene {
         if let r = r {
             dockPile = Pile(minX: r.minX, topY: r.maxY + Cfg.dockTopOffset, width: r.width,
                             maxH: Cfg.dockPileMax, parent: world)
+            dockPile?.settleScale = Cfg.dockSettleScale
         }
     }
 

@@ -283,4 +283,45 @@ import SpriteKit
         check(maxStep < (12 - final) * 0.5, "ball shrinks over several frames (biggest step \(String(format: "%.2f", maxStep)) of \(String(format: "%.2f", 12 - final)))")
         check(landedAt >= 0 && abs(rs[min(rs.count - 1, landedAt + 18)] - final) < 0.05, "and reaches its new size within 0.3 s")
     }
+
+    // 21. Snow settles: even the heaviest snowfall levels off below the height limit (ground and Dock)
+    do {
+        let saved = Cfg.targetFlakes
+        Cfg.targetFlakes = 500                          // "Heavy"
+        let sc = SnowScene(size: CGSize(width: 1470, height: 956))
+        sc.didMove(to: SKView(frame: NSRect(x: 0, y: 0, width: 1470, height: 956)))
+        let g = sc.ground!
+        let dr = CGRect(x: 400, y: 0, width: 670, height: 70)
+        sc.dockRect = dr
+        let d = Pile(minX: dr.minX, topY: dr.maxY, width: dr.width, maxH: Cfg.dockPileMax, parent: sc.world)
+        d.settleScale = Cfg.dockSettleScale
+        sc.dockPile = d
+        // Each column's average height over the last 5 minutes: the level you see, not single-flake spikes
+        var gSum = [CGFloat](repeating: 0, count: g.count), dSum = [CGFloat](repeating: 0, count: d.count)
+        for sec in 1...600 {                            // 10 minutes
+            for _ in 0..<20 { sc.stepFlakes(1.0 / 20); sc.settle(1.0 / 20) }
+            if g.dirty { g.redraw() }
+            if d.dirty { d.redraw() }
+            if sec > 300 {
+                for c in 0..<g.count { gSum[c] += g.h[c] / 300 }
+                for c in 0..<d.count { dSum[c] += d.h[c] / 300 }
+            }
+        }
+        // Only full-height columns: the tapered tips at each end are meant to sit at their (small) cap
+        let gPeak = (0..<g.count).filter { g.caps[$0] >= g.maxH * 0.999 && !(400...1070).contains(g.colX($0)) }
+            .map { gSum[$0] / g.caps[$0] }.max() ?? 0
+        let dPeak = (0..<d.count).filter { d.caps[$0] >= d.maxH * 0.999 }.map { dSum[$0] / d.caps[$0] }.max() ?? 0
+        Cfg.targetFlakes = saved
+        check(gPeak < 0.85, "heavy snow on the ground levels off below the limit (peak \(Int(gPeak * 100))% of max)")
+        check(gPeak > 0.4, "but still builds up a real layer (peak \(Int(gPeak * 100))%)")
+        check(dPeak < 0.85, "heavy snow on the Dock levels off below the limit (peak \(Int(dPeak * 100))% of max)")
+    }
+
+    // 22. A thin layer of snow barely settles
+    do {
+        let (sc, g) = makeScene(depth: 4)
+        for _ in 0..<(60 * 20) { sc.settle(1.0 / 20) }   // one minute
+        let left = g.h[g.count / 2]
+        check(left > 3.5, "4 px of snow loses less than 0.5 px in a minute (now \(String(format: "%.2f", left)))")
+    }
 }
