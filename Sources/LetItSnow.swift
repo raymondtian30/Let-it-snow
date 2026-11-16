@@ -13,7 +13,7 @@ import SpriteKit
 
 enum Cfg {
     static var targetFlakes = 260            // number of flakes falling at the same time
-    static let pileOnWindows = false         // false: snow falls in front of windows and piles only at the bottom
+    static let pileOnWindows = true          // false: snow falls in front of windows and piles only at the bottom
                                              // of the screen and on the Dock. true: snow also piles on window tops
     static let colW: CGFloat = 3             // width of one column of the snow height map (px)
     static let windowPileMax: CGFloat = 16   // max snow height on top of a window
@@ -25,8 +25,6 @@ enum Cfg {
     static let dockPad: CGFloat = 4          // extra width of the Dock pile on each side of the icon area
     static let dockTopOffset: CGFloat = -1   // lower it if the snow floats above the Dock, raise it if it sinks in
     static let fallSpeed: CGFloat = 1.5      // falling speed multiplier (1 = original, bigger = faster)
-    static let flakesInFront = true          // some of the smallest flakes fall in front of windows, so they can reach the Dock
-    static let inFrontFraction: CGFloat = 0.4 // share of the smallest layer that falls in front (0...1)
     static let ballStartRadius: CGFloat = 3  // a new snowball starts this small
     static let ballMaxRadius: CGFloat = 28   // and stops growing at this size
     static let maxBalls = 20                 // oldest resting snowballs are removed beyond this
@@ -45,6 +43,7 @@ enum Cfg {
     static let settleRate: CGFloat = 0.012   // how fast snow settles/melts (1/s), scaled by (height / max)²: deep snow
                                              // sinks faster, so piles level off below their max instead of a flat top
     static let dockSettleScale: CGFloat = 8  // the Dock catches several times more snow per px (dockGain), so it settles faster
+    static let windowSettleScale: CGFloat = 3 // window piles are thinner (lower max) and catch a bit more snow per px
     static let reposeStep: CGFloat = 1.6     // steepest snow slope: max height step between two columns (px) before it slumps
 }
 
@@ -246,6 +245,7 @@ let layers: [Layer] = [
     var phase: CGFloat = 0
     var windFactor: CGFloat = 1
     var inFront = false          // true = falls in front of windows (ignores them), lands on Dock / ground
+    var behind = false           // true = falls behind windows (hidden while over one), lands on Dock / ground
     var isClump = false          // true = clump sliding off a surface (affected by gravity)
     var ignoreID = -1            // don't land right back on the surface it came from
     var ignoreUntil: CGFloat = 0
@@ -380,7 +380,7 @@ let layers: [Layer] = [
         }
         let p = CGMutablePath()
         p.move(to: CGPoint(x: minX, y: topY))
-        for c in 0..<count { p.addLine(to: CGPoint(x: colX(c), y: topY + h[c])) }
+        for c in 0..<count { p.addLine(to: CGPoint(x: colX(c), y: topY + (occ[c] ? 0 : h[c]))) }   // covered: kept, not drawn
         p.addLine(to: CGPoint(x: minX + width, y: topY))
         p.closeSubpath()
         body.path = p
@@ -477,8 +477,8 @@ final class SnowScene: SKScene {
         let r = CGFloat.random(in: 0...1)
         let li = r < 0.40 ? 0 : (r < 0.68 ? 1 : 2)   // 40% far, 28% middle, 32% near
         let L = layers[li]
-        f.inFront = !Cfg.pileOnWindows
-            || (Cfg.flakesInFront && li == 0 && CGFloat.random(in: 0...1) < Cfg.inFrontFraction)
+        f.inFront = !Cfg.pileOnWindows             // with window piles, snow falls behind windows (none crosses a window)
+        f.behind = Cfg.pileOnWindows && li == 0     // the far layer passes behind windows down to the bottom of the screen
         f.isClump = false
         f.ignoreID = -1
         f.size = CGFloat.random(in: L.size)
@@ -496,7 +496,9 @@ final class SnowScene: SKScene {
     func spawnClump(at p: CGPoint, vel: CGVector, sourceID: Int) {
         let f = obtain()
         f.isClump = true
-        f.inFront = false
+        f.behind = false
+        // Snow knocked off a window or the Dock falls in front of every window, down to the ground or the Dock
+        f.inFront = sourceID >= 0 || sourceID == SnowScene.dockID
         f.size = rnd(2.5, 5)
         f.vel = vel
         f.ignoreID = sourceID
@@ -508,7 +510,7 @@ final class SnowScene: SKScene {
     }
 
     // Turn a pile into falling clumps; vel is the window's velocity, so faster drags fling snow farther
-    func release(_ p: Pile, vel: CGVector, id: Int) {
+    func release(_ p: Pile, vel: CGVector, id: Int, only cols: Set<Int>? = nil) {
         let fling = CGVector(dx: max(-900, min(900, vel.dx * 0.5)),
                              dy: max(-300, min(500, vel.dy * 0.4)))
         // Snowballs sitting on this surface get flung off too
@@ -519,7 +521,7 @@ final class SnowScene: SKScene {
         guard total > 0.5 else { p.clear(); return }
         let budget = CGFloat(max(0, Cfg.maxClumps - flakes.count + Cfg.targetFlakes))
         let k = min(1, budget / max(1, total / 3.5))
-        for c in 0..<p.count where p.h[c] > 0.6 {
+        for c in 0..<p.count where p.h[c] > 0.6 && (cols?.contains(c) ?? true) {
             var amount = p.h[c] / 3.5 * k
             while amount > 0 {
                 if amount < 1 && CGFloat.random(in: 0...1) > amount { break }
@@ -547,7 +549,7 @@ final class SnowScene: SKScene {
         }
         stepFlakes(dt)
         updateMouseCapture()
-        if let b = dragBall { stepDrag(b, dt) } else { updateRolling(dt, mouse: NSEvent.mouseLocation) }
+        stepMouse(dt, mouse: NSEvent.mouseLocation)
         stepBalls(dt)
     }
 
@@ -557,8 +559,63 @@ final class SnowScene: SKScene {
     /// does it catch clicks, so you can grab the ball without clicking the window underneath.
     func updateMouseCapture() {
         guard let w = view?.window else { return }
-        let capture = dragBall != nil || ballAt(NSEvent.mouseLocation) != nil
+        let capture = wantsMouse(at: NSEvent.mouseLocation)
         if w.ignoresMouseEvents == capture { w.ignoresMouseEvents = !capture }
+    }
+
+    /// True while the mouse button is held after pressing on the snow: moving then rolls a snowball
+    var rolling = false
+
+    /// Should a click here go to the snow (a snowball, or snow deep enough to roll) instead of the app below?
+    func wantsMouse(at m: CGPoint) -> Bool {
+        dragBall != nil || rolling || ballAt(m) != nil || snowAt(m)
+    }
+
+    /// Is the point on visible snow at least 4 px deep (the Dock, a window top or the bottom of the screen)?
+    func snowAt(_ m: CGPoint) -> Bool {
+        func on(_ p: Pile) -> Bool {
+            guard let c = p.col(at: m.x), !p.occ[c], p.h[c] >= 4 else { return false }
+            return m.y >= p.topY && m.y <= p.topY + p.h[c] + 2
+        }
+        if let d = dockPile, on(d) { return true }
+        for item in order {
+            if let p = piles[item.id], on(p) { return true }
+            if item.rect.contains(m) { break }           // over a window: only the bottom snow is in front of it
+        }
+        if let g = ground, on(g) { return true }
+        return false
+    }
+
+    /// One frame of mouse handling: drag the grabbed ball, or roll a snowball while the button is held
+    func stepMouse(_ dt: CGFloat, mouse m: CGPoint) {
+        if let b = dragBall {
+            stepDrag(b, dt)
+        } else if rolling {
+            updateRolling(dt, mouse: m)
+        } else {
+            activeBall = nil
+            lastMouse = m
+        }
+    }
+
+    func pressDown(at m: CGPoint) {
+        if let b = ballAt(m) {
+            grab(b, at: m)
+        } else if snowAt(m) {
+            rolling = true
+            activeBall = nil
+            lastMouse = m
+        }
+    }
+
+    func pressUp(at m: CGPoint) {
+        if rolling {
+            rolling = false
+            activeBall?.vx = 0
+            activeBall = nil
+        } else {
+            letGo(at: m)
+        }
     }
 
     /// The visible, resting snowball under a point (top of a stack first)
@@ -591,24 +648,17 @@ final class SnowScene: SKScene {
     var noNewBallNear: CGPoint?
 
     override func mouseDown(with event: NSEvent) {
-        let m = event.location(in: self)
-        guard let b = ballAt(m) else { return }
-        grab(b, at: m)
+        pressDown(at: event.location(in: self))
     }
 
-    func grab(_ b: Snowball, at m: CGPoint) {
-        // Anything stacked on top of the grabbed ball tumbles off
-        var a = above(b)
-        while let x = a {
-            a = above(x)
-            x.drop(vel: CGVector(dx: rnd(-50, 50), dy: rnd(40, 100)))
-        }
-        removeDecor(stackOf: b)
+    /// Grab a ball. A stack (a snowman) is grabbed as a whole, by its base, so it stays in one piece.
+    func grab(_ grabbed: Snowball, at m: CGPoint) {
+        let b = base(of: grabbed)
+        for (i, x) in stack(from: b).enumerated() { x.node.zPosition = 8 + CGFloat(i) * 0.3 }   // in front while dragging
         b.pile = nil
         b.below = nil
         b.vx = 0
         b.dragging = true
-        b.node.zPosition = 8                 // in front while dragging
         dragBall = b
         activeBall = nil
         dragOffset = CGPoint(x: b.x - m.x, y: b.y - m.y)
@@ -621,7 +671,7 @@ final class SnowScene: SKScene {
     }
 
     override func mouseUp(with event: NSEvent) {
-        letGo(at: event.location(in: self))
+        pressUp(at: event.location(in: self))
     }
 
     func letGo(at m: CGPoint) {
@@ -631,7 +681,7 @@ final class SnowScene: SKScene {
         if let target = stackTarget(for: b) {
             stack(b, on: target)
         } else {
-            b.node.zPosition = 6.5
+            for (i, x) in stack(from: b).enumerated() { x.node.zPosition = 6.5 + CGFloat(i) * 0.3 }
             noNewBallNear = m
             // Let go: it falls (with a bit of the throw) and lands on whatever is below
             b.drop(vel: CGVector(dx: max(-600, min(600, dragVel.dx * 0.5)),
@@ -667,8 +717,9 @@ final class SnowScene: SKScene {
     func stackTarget(for b: Snowball) -> Snowball? {
         var best: Snowball?
         var bestDist = CGFloat.greatestFiniteMagnitude
-        for c in balls where c !== b && !c.falling && !c.dragging && !c.node.isHidden {
-            guard above(c) == nil, stack(from: base(of: c)).count < 3 else { continue }
+        let carried = stack(from: b).count             // a dragged stack brings its balls along
+        for c in balls where c !== b && !c.falling && !c.dragging && !c.node.isHidden && base(of: c) !== b {
+            guard above(c) == nil, stack(from: base(of: c)).count + carried <= 3 else { continue }
             let dx = abs(b.x - c.x), dy = b.y - c.y
             guard dx < c.r * 0.9 + b.r * 0.3, dy > 0, dy < c.r + b.r + 30 else { continue }
             if dx < bestDist { best = c; bestDist = dx }
@@ -775,11 +826,11 @@ final class SnowScene: SKScene {
         }
         if let d = dockPile, mouseOver(d, m) { return d }
         if let dr = dockRect, dr.contains(m) { return nil }
+        if let g = ground, mouseOver(g, m) { return g }   // the bottom snow is drawn in front of windows
         for item in order {
             if let p = piles[item.id], mouseOver(p, m) { return p }
             if item.rect.contains(m) { return nil }      // over a window's content
         }
-        if let g = ground, mouseOver(g, m) { return g }
         return nil
     }
 
@@ -1051,7 +1102,7 @@ final class SnowScene: SKScene {
             if b.crushed {
                 gone = true
             } else if b.falling {
-                if b.decor != nil { b.decor?.removeFromParent(); b.decor = nil }
+                if b.decor != nil && above(b) == nil { b.decor?.removeFromParent(); b.decor = nil }   // a lone tumbling ball
                 b.node.zPosition = 6.5
                 let prevBottom = b.y - b.r
                 b.vel.dy -= Cfg.gravity * dt
@@ -1070,13 +1121,10 @@ final class SnowScene: SKScene {
             } else if b.dragging {
                 // position is set by stepDrag
             } else if let under = b.below {
-                if under.falling || under.dragging {
-                    b.drop(vel: CGVector(dx: under.vel.dx + rnd(-40, 40), dy: max(under.vel.dy, 0) + rnd(30, 80)))
-                } else {
-                    b.x = under.x
-                    b.y = under.y + under.r + b.r * 0.82   // sits slightly sunk into the ball below
-                    b.node.isHidden = under.node.isHidden
-                }
+                // Stays on the ball below, also while that one is dragged or falling: a snowman moves as one
+                b.x = under.x
+                b.y = under.y + under.r + b.r * 0.82   // sits slightly sunk into the ball below
+                b.node.isHidden = under.node.isHidden
             } else if let p = b.pile {
                 if let t = b.targetR {                     // easing down after a partial break
                     b.r += (t - b.r) * min(1, dt * 20)
@@ -1102,6 +1150,16 @@ final class SnowScene: SKScene {
                 b.layout()
             }
             i -= 1
+        }
+        // Stacked balls sit on the ball below as it is after this frame's move (the loop may have placed them first)
+        for b in balls where b.below == nil && !b.crushed {
+            var under = b
+            while let x = above(under) {
+                x.x = under.x
+                x.y = under.y + under.r + x.r * 0.82
+                x.layout()
+                under = x
+            }
         }
         // Balls grow and move above, so settle contacts last, after everything has moved this frame
         collideBalls()
@@ -1210,7 +1268,7 @@ final class SnowScene: SKScene {
     /// depends on the bigger, heavier one); a gentle, centered drop stacks it on top; anything else
     /// glances off and nudges the ball it hit. Returns true if the falling ball itself is gone.
     func hitBalls(_ b: Snowball) -> Bool {
-        for o in balls where o !== b && !o.falling && !o.dragging && !o.crushed && !o.node.isHidden {
+        for o in balls where o !== b && !o.falling && !o.dragging && !o.crushed && !o.node.isHidden && base(of: o) !== b {
             let dx = b.x - o.x, dy = b.y - o.y
             let d = (dx * dx + dy * dy).squareRoot(), minD = b.r + o.r
             guard d < minD, d > 0.01 else { continue }
@@ -1311,9 +1369,20 @@ final class SnowScene: SKScene {
     }
 
     func pollWindows(dt: CGFloat) {
+        // The Dock rarely changes; checking every 0.5 s is enough
+        dockAcc += dt
+        if dockAcc >= 0.5 {
+            dockAcc = 0
+            updateDock()
+        }
+        applyWindows(Cfg.pileOnWindows ? readWindows() : [], dt: dt)
+    }
+
+    /// Normal app windows on screen, front to back, in scene coordinates
+    func readWindows() -> [(id: Int, rect: CGRect)] {
         let H = size.height
         var newOrder: [(id: Int, rect: CGRect)] = []
-        if Cfg.pileOnWindows, let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+        if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
             for w in info {
                 guard let layerN = w[kCGWindowLayer as String] as? NSNumber, layerN.intValue == 0,
                       let pidN = w[kCGWindowOwnerPID as String] as? NSNumber, pidN.int32Value != myPID,
@@ -1326,10 +1395,53 @@ final class SnowScene: SKScene {
                                  rect: CGRect(x: b.minX, y: H - b.maxY, width: b.width, height: b.height)))
             }
         }
+        return newOrder
+    }
 
-        // Closed / minimized windows: their snow just falls
+    /// Whether a window that's not on screen still exists (minimized, hidden, on another Space) or was closed
+    var windowExists: (Int) -> Bool = { id in
+        let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id)) as? [[String: Any]]
+        return !(info ?? []).isEmpty
+    }
+
+    /// A resized window: move the snow that's still supported onto a pile of the new size; the rest falls
+    func reshape(_ old: Pile, to r: CGRect, id: Int) -> Pile {
+        let new = windowPile(r)
+        var unsupported = Set<Int>()
+        for c in 0..<old.count where old.h[c] > 0 {
+            if let nc = new.col(at: old.colX(c)) {
+                new.h[nc] = max(new.h[nc], min(new.caps[nc], old.h[c]))
+            } else {
+                unsupported.insert(c)
+            }
+        }
+        for b in balls where b.pile === old {
+            if new.col(at: b.x) != nil { b.pile = new } else { b.drop(vel: CGVector(dx: 0, dy: 20)) }
+        }
+        release(old, vel: .zero, id: id, only: unsupported)
+        old.remove()
+        new.dirty = true
+        return new
+    }
+
+    func windowPile(_ r: CGRect) -> Pile {
+        let p = Pile(minX: r.minX, topY: r.maxY, width: r.width, maxH: Cfg.windowPileMax, parent: world)
+        p.settleScale = Cfg.windowSettleScale
+        return p
+    }
+
+    /// Update the window piles from the current windows: new windows get a pile, and a window that was
+    /// closed, resized or moved drops its snow
+    func applyWindows(_ newOrder: [(id: Int, rect: CGRect)], dt: CGFloat) {
+
+        // Windows no longer on screen: a closed window's snow falls; a minimized or hidden one (or one on
+        // another Space) keeps its snow, hidden, until it's back
         let alive = Set(newOrder.map { $0.id })
         for (id, pile) in piles where !alive.contains(id) {
+            if windowExists(id) {
+                for c in 0..<pile.count where !pile.occ[c] { pile.occ[c] = true; pile.dirty = true }
+                continue
+            }
             release(pile, vel: .zero, id: id)
             pile.remove()
             piles[id] = nil
@@ -1339,11 +1451,21 @@ final class SnowScene: SKScene {
         for item in newOrder {
             let id = item.id, r = item.rect
             if let pile = piles[id], let old = lastRect[id] {
-                if abs(old.width - r.width) > 0.5 {
-                    // Width changed: drop the snow and start a new pile
+                let same = { (a: CGFloat, b: CGFloat) in abs(a - b) < 0.5 }
+                let sideFixed = same(old.minX, r.minX) || same(old.maxX, r.maxX)
+                let topOnly = same(old.minY, r.minY)       // bottom edge stayed: only the top edge moved
+                if !same(old.width, r.width) && sideFixed && (same(old.maxY, r.maxY) || topOnly) {
+                    // Resized: snow still on the top edge stays, the part past the new edge falls
+                    piles[id] = reshape(pile, to: r, id: id)
+                } else if !same(old.width, r.width) {
+                    // Moved and resized at once (e.g. zoomed): drop the snow and start a new pile
                     release(pile, vel: .zero, id: id)
                     pile.remove()
-                    piles[id] = Pile(minX: r.minX, topY: r.maxY, width: r.width, maxH: Cfg.windowPileMax, parent: world)
+                    piles[id] = windowPile(r)
+                } else if same(old.minX, r.minX) && topOnly && !same(old.maxY, r.maxY) {
+                    // Top edge dragged up or down: the snow rides along
+                    pile.topY = r.maxY
+                    pile.dirty = true
                 } else if abs(old.minX - r.minX) > 0.3 || abs(old.maxY - r.maxY) > 0.3 {
                     // Window dragged: fling the snow off
                     let v = CGVector(dx: (r.minX - old.minX) / dt, dy: (r.maxY - old.maxY) / dt)
@@ -1352,18 +1474,11 @@ final class SnowScene: SKScene {
                     release(pile, vel: v, id: id)
                 }
             } else {
-                piles[id] = Pile(minX: r.minX, topY: r.maxY, width: r.width, maxH: Cfg.windowPileMax, parent: world)
+                piles[id] = windowPile(r)
             }
             lastRect[id] = r
         }
         order = newOrder
-
-        // The Dock rarely changes; checking every 0.5 s is enough
-        dockAcc += dt
-        if dockAcc >= 0.5 {
-            dockAcc = 0
-            updateDock()
-        }
 
         computeOcclusion()
         for p in piles.values { p.redraw() }
@@ -1429,24 +1544,12 @@ final class SnowScene: SKScene {
                     for j in 0..<i where order[j].rect.contains(pt) { o = true; break }
                 }
                 if o != p.occ[c] {
-                    p.occ[c] = o
-                    if o { p.h[c] = 0 }
+                    p.occ[c] = o                   // covered snow is only hidden; it's still there when uncovered
                     p.dirty = true
                 }
             }
         }
-        if let g = ground {
-            for c in 0..<g.count {
-                let pt = CGPoint(x: g.colX(c), y: 1)
-                var o = false
-                for item in order where item.rect.contains(pt) { o = true; break }
-                if o != g.occ[c] {
-                    g.occ[c] = o
-                    if o { g.h[c] = 0 }
-                    g.dirty = true
-                }
-            }
-        }
+        // The bottom of the screen is never covered: its snow is drawn in front of windows
     }
 
     func stepFlakes(_ dt: CGFloat) {
@@ -1483,7 +1586,7 @@ final class SnowScene: SKScene {
                     }
                 }
                 // Then check window tops, front to back
-                if !gone && !f.inFront { for item in order {
+                if !gone && !f.inFront && !f.behind { for item in order {
                     guard let pile = piles[item.id] else { continue }
                     if f.isClump && item.id == f.ignoreID && t < f.ignoreUntil { continue }
                     guard let c = pile.col(at: p.x), !pile.occ[c] else { continue }
@@ -1501,10 +1604,12 @@ final class SnowScene: SKScene {
                 }
             }
             if !gone {
-                // Flakes that fall "behind" a window disappear
+                // Snow over a window is behind it: hidden, but it keeps falling to the bottom of the screen
+                var hide = false
                 if !f.inFront {
-                    for item in order where item.rect.contains(p) { gone = true; break }
+                    for item in order where item.rect.contains(p) { hide = true; break }
                 }
+                if f.node.isHidden != hide { f.node.isHidden = hide }
                 if p.y < -20 { gone = true }
                 if f.isClump && (p.x < -80 || p.x > size.width + 80) { gone = true }
             }

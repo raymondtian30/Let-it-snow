@@ -324,4 +324,174 @@ import SpriteKit
         let left = g.h[g.count / 2]
         check(left > 3.5, "4 px of snow loses less than 0.5 px in a minute (now \(String(format: "%.2f", left)))")
     }
+
+    // 23. Snow piles on a window's top, never shows over its face, levels off below the max, and falls to the
+    // ground when the window is moved
+    do {
+        let saved = Cfg.targetFlakes
+        Cfg.targetFlakes = 500
+        let sc = SnowScene(size: CGSize(width: 1470, height: 956))
+        sc.didMove(to: SKView(frame: NSRect(x: 0, y: 0, width: 1470, height: 956)))
+        let g = sc.ground!
+        var rect = CGRect(x: 400, y: 300, width: 600, height: 400)
+        sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
+        var overFace = 0
+        var wSum: [CGFloat] = []
+        for sec in 1...600 {
+            for _ in 0..<20 {
+                sc.stepFlakes(1.0 / 20)
+                sc.settle(1.0 / 20)
+                sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
+                for f in sc.flakes where !f.node.isHidden && rect.insetBy(dx: 2, dy: 2).contains(f.node.position) { overFace += 1 }
+            }
+            if sec > 300, let w = sc.piles[7] {
+                if wSum.isEmpty { wSum = [CGFloat](repeating: 0, count: w.count) }
+                for c in 0..<w.count { wSum[c] += w.h[c] / 300 }
+            }
+        }
+        let w = sc.piles[7]!
+        check(w.total / CGFloat(w.count) > 2, "snow piles up on top of a window (avg \(String(format: "%.1f", w.total / CGFloat(w.count))) px)")
+        check(overFace == 0, "no snow is drawn over a window's face (\(overFace) flake-frames)")
+        let wPeak = (0..<w.count).filter { w.caps[$0] >= w.maxH * 0.999 }.map { wSum[$0] / w.caps[$0] }.max() ?? 1
+        check(wPeak < 0.85, "heavy snow on a window levels off below the limit (peak \(Int(wPeak * 100))% of max)")
+
+        // Let the sky empty out, then drag the window: its snow falls to the ground instead of vanishing
+        Cfg.targetFlakes = 0
+        for _ in 0..<(20 * 20) { sc.stepFlakes(1.0 / 20); sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20) }
+        let onWindow = w.total
+        let groundBefore = g.total
+        rect.origin.x += 60
+        sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
+        check(sc.piles[7]!.total < 0.5, "moving the window knocks its snow off")
+        for _ in 0..<(20 * 20) { sc.stepFlakes(1.0 / 20); sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20) }
+        let gained = g.total - groundBefore
+        check(gained > onWindow * 0.5, "the knocked-off snow lands on the ground (+\(Int(gained)) for \(Int(onWindow)) on the window)")
+        Cfg.targetFlakes = saved
+    }
+
+    /// A scene with one window (id 1) whose top is covered in `depth` px of snow
+    func windowScene(_ rect: CGRect, depth: CGFloat) -> (SnowScene, Pile) {
+        let (sc, _) = makeScene(depth: 0)
+        sc.applyWindows([(id: 1, rect: rect)], dt: 1.0 / 30)
+        let w = sc.piles[1]!
+        for c in 0..<w.count { w.h[c] = min(w.caps[c], depth) }
+        w.dirty = true
+        for _ in 0..<300 { sc.applyWindows([(id: 1, rect: rect)], dt: 1.0 / 30) }   // let the snow slump into shape
+        return (sc, w)
+    }
+
+    // 24. Snow covered by another window is kept, not deleted, and shows again when the window comes back to front
+    do {
+        let a = CGRect(x: 200, y: 200, width: 500, height: 300)
+        let (sc, w) = windowScene(a, depth: 8)
+        let before = w.total
+        let b = CGRect(x: 450, y: 100, width: 500, height: 500)   // covers the right half of a's top
+        sc.applyWindows([(id: 2, rect: b), (id: 1, rect: a)], dt: 1.0 / 30)
+        check(w.occ.contains(true), "the covered part of the snow is hidden")
+        check(abs(w.total - before) < before * 0.005, "covering a window's snow doesn't delete it")
+        sc.applyWindows([(id: 1, rect: a), (id: 2, rect: b)], dt: 1.0 / 30)
+        check(!w.occ.contains(true) && abs(w.total - before) < before * 0.005, "it shows again when the window comes to the front")
+    }
+
+    // 25. A minimized / hidden window keeps its snow; only a closed window drops it
+    do {
+        let a = CGRect(x: 200, y: 200, width: 500, height: 300)
+        let (sc, w) = windowScene(a, depth: 8)
+        let before = w.total
+        sc.windowExists = { _ in true }                 // still exists, just not on screen
+        sc.applyWindows([], dt: 1.0 / 30)
+        check(sc.piles[1] === w && abs(w.total - before) < before * 0.005, "a hidden window keeps its snow")
+        check(!w.occ.contains(false), "and it isn't drawn while the window is hidden")
+        sc.applyWindows([(id: 1, rect: a)], dt: 1.0 / 30)
+        check(abs(w.total - before) < before * 0.005 && !w.occ.contains(true), "it's back when the window shows again")
+        sc.windowExists = { _ in false }                // closed
+        sc.applyWindows([], dt: 1.0 / 30)
+        check(sc.piles[1] == nil, "a closed window's snow falls off")
+    }
+
+    // 26. Resizing drops only the snow that lost its support
+    do {
+        let a = CGRect(x: 200, y: 200, width: 600, height: 300)
+        let (sc, w) = windowScene(a, depth: 8)
+        let full = w.total
+        let clumpsBefore = sc.flakes.filter { $0.isClump }.count
+        sc.applyWindows([(id: 1, rect: CGRect(x: 200, y: 200, width: 400, height: 300))], dt: 1.0 / 30)
+        let n = sc.piles[1]!
+        check(n.total > full * 0.55 && n.total < full * 0.75, "narrowing a window keeps the snow still on top (\(Int(n.total)) of \(Int(full)))")
+        check(sc.flakes.filter { $0.isClump }.count > clumpsBefore, "and the part past the new edge falls")
+        for _ in 0..<300 { sc.applyWindows([(id: 1, rect: CGRect(x: 200, y: 200, width: 400, height: 300))], dt: 1.0 / 30) }
+        let kept = n.total
+        sc.applyWindows([(id: 1, rect: CGRect(x: 200, y: 200, width: 400, height: 380))], dt: 1.0 / 30)
+        check(abs(sc.piles[1]!.total - kept) < kept * 0.005, "dragging the top edge up carries the snow along")
+        check(abs(sc.piles[1]!.topY - 580) < 0.01, "on the new top edge")
+    }
+
+    // 27. With a big window in the way, snow still piles on its top and at the bottom of the screen
+    do {
+        let saved = Cfg.targetFlakes
+        Cfg.targetFlakes = 500
+        let sc = SnowScene(size: CGSize(width: 1470, height: 956))
+        sc.didMove(to: SKView(frame: NSRect(x: 0, y: 0, width: 1470, height: 956)))
+        let r = CGRect(x: 0, y: 0, width: 1470, height: 900)   // nearly full screen
+        for _ in 0..<(120 * 20) { sc.stepFlakes(1.0 / 20); sc.applyWindows([(id: 1, rect: r)], dt: 1.0 / 20) }
+        Cfg.targetFlakes = saved
+        let g = sc.ground!
+        check(sc.piles[1]!.total / CGFloat(sc.piles[1]!.count) > 1, "snow piles on top of the window")
+        check(g.total / CGFloat(g.count) > 1, "and at the bottom of the screen (avg \(String(format: "%.1f", g.total / CGFloat(g.count))) px)")
+        check(!g.occ.contains(true), "the bottom pile is drawn in front of windows")
+    }
+
+    // 28. Hovering doesn't make a snowball; press and drag does
+    do {
+        let (sc, g) = makeScene(depth: 10)
+        let y = g.topY + 5
+        sc.lastMouse = CGPoint(x: 300, y: y)
+        for k in 0...40 { sc.stepMouse(dt, mouse: CGPoint(x: 300 + CGFloat(k) * 5, y: y)); sc.stepBalls(dt) }
+        check(sc.balls.isEmpty, "hovering over the snow doesn't make a ball")
+        sc.pressDown(at: CGPoint(x: 500, y: y))
+        for k in 0...40 { sc.stepMouse(dt, mouse: CGPoint(x: 500 + CGFloat(k) * 5, y: y)); sc.stepBalls(dt) }
+        check(sc.balls.count == 1, "pressing and dragging over the snow rolls a ball (\(sc.balls.count))")
+        sc.pressUp(at: CGPoint(x: 700, y: y))
+        let n = sc.balls.count, x = sc.balls.first?.x ?? 0
+        for k in 0...40 { sc.stepMouse(dt, mouse: CGPoint(x: 700 + CGFloat(k) * 5, y: y)); sc.stepBalls(dt) }
+        check(sc.balls.count == n && abs((sc.balls.first?.x ?? 0) - x) < 1, "after letting go, hovering doesn't roll it")
+        check(sc.wantsMouse(at: CGPoint(x: 900, y: y)), "the snow catches clicks")
+        check(!sc.wantsMouse(at: CGPoint(x: 900, y: g.topY + 40)), "the empty air above it doesn't")
+        // The bottom snow is in front of windows: it can be rolled even where a window reaches the bottom
+        sc.rolling = false
+        sc.balls.removeAll()
+        sc.applyWindows([(id: 3, rect: CGRect(x: 0, y: 0, width: 1200, height: 600))], dt: dt)
+        check(sc.wantsMouse(at: CGPoint(x: 300, y: y)), "bottom snow in front of a window catches clicks")
+        sc.pressDown(at: CGPoint(x: 300, y: y))
+        for k in 0...40 { sc.stepMouse(dt, mouse: CGPoint(x: 300 + CGFloat(k) * 5, y: y)); sc.stepBalls(dt) }
+        check(sc.balls.count == 1, "and rolls a ball there (\(sc.balls.count))")
+        sc.pressUp(at: CGPoint(x: 500, y: y))
+        check(!sc.wantsMouse(at: CGPoint(x: 600, y: 300)), "a window's face still gets its own clicks")
+    }
+
+    // 29. Dragging any ball of a snowman moves the whole snowman, face and all
+    do {
+        let (sc, g) = makeScene(depth: 4)
+        let base = newBall(sc, g, x: 600, r: 16)
+        let mid = newBall(sc, g, x: 600, r: 12)
+        let head = newBall(sc, g, x: 600, r: 9)
+        sc.stack(mid, on: base)
+        sc.stack(head, on: mid)
+        for _ in 0..<5 { sc.stepBalls(dt) }
+        check(head.decor != nil, "three stacked balls make a snowman")
+        let start = CGPoint(x: head.x, y: head.y)
+        sc.grab(head, at: start)
+        check(sc.dragBall === base, "grabbing the head drags the whole snowman")
+        for k in 1...20 {
+            sc.dragTarget = CGPoint(x: start.x + CGFloat(k) * 5, y: start.y + CGFloat(k))
+            sc.stepDrag(sc.dragBall!, dt)
+            sc.stepBalls(dt)
+        }
+        check(abs(base.x - 700) < 1 && abs(mid.x - 700) < 1 && abs(head.x - 700) < 1, "all three balls move together")
+        check(head.below === mid && mid.below === base && head.decor != nil, "the snowman stays in one piece")
+        sc.letGo(at: sc.dragTarget)
+        for _ in 0..<240 { sc.stepBalls(dt) }
+        check(!base.falling && base.pile != nil, "let go, it lands")
+        check(head.below === mid && mid.below === base && head.decor != nil, "still a snowman after landing")
+    }
 }
