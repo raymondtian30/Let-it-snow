@@ -336,13 +336,16 @@ import SpriteKit
         var rect = CGRect(x: 400, y: 300, width: 600, height: 400)
         sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
         var overFace = 0
+        var farOverFace = 0
         var wSum: [CGFloat] = []
         for sec in 1...600 {
             for _ in 0..<20 {
                 sc.stepFlakes(1.0 / 20)
                 sc.settle(1.0 / 20)
                 sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
-                for f in sc.flakes where !f.node.isHidden && rect.insetBy(dx: 2, dy: 2).contains(f.node.position) { overFace += 1 }
+                for f in sc.flakes where !f.node.isHidden && rect.insetBy(dx: 2, dy: 2).contains(f.node.position) {
+                    if f.behind { farOverFace += 1 } else { overFace += 1 }
+                }
             }
             if sec > 300, let w = sc.piles[7] {
                 if wSum.isEmpty { wSum = [CGFloat](repeating: 0, count: w.count) }
@@ -351,7 +354,8 @@ import SpriteKit
         }
         let w = sc.piles[7]!
         check(w.total / CGFloat(w.count) > 2, "snow piles up on top of a window (avg \(String(format: "%.1f", w.total / CGFloat(w.count))) px)")
-        check(overFace == 0, "no snow is drawn over a window's face (\(overFace) flake-frames)")
+        check(overFace == 0, "near and middle snow never shows over a window's face (\(overFace) flake-frames)")
+        check(farOverFace > 0, "far snow still shows falling over a window (\(farOverFace) flake-frames)")
         let wPeak = (0..<w.count).filter { w.caps[$0] >= w.maxH * 0.999 }.map { wSum[$0] / w.caps[$0] }.max() ?? 1
         check(wPeak < 0.85, "heavy snow on a window levels off below the limit (peak \(Int(wPeak * 100))% of max)")
 

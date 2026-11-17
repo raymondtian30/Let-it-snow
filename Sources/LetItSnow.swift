@@ -245,7 +245,7 @@ let layers: [Layer] = [
     var phase: CGFloat = 0
     var windFactor: CGFloat = 1
     var inFront = false          // true = falls in front of windows (ignores them), lands on Dock / ground
-    var behind = false           // true = falls behind windows (hidden while over one), lands on Dock / ground
+    var behind = false           // true = passes over windows (still visible), lands on Dock / ground
     var isClump = false          // true = clump sliding off a surface (affected by gravity)
     var ignoreID = -1            // don't land right back on the surface it came from
     var ignoreUntil: CGFloat = 0
@@ -478,7 +478,7 @@ final class SnowScene: SKScene {
         let li = r < 0.40 ? 0 : (r < 0.68 ? 1 : 2)   // 40% far, 28% middle, 32% near
         let L = layers[li]
         f.inFront = !Cfg.pileOnWindows             // with window piles, snow falls behind windows (none crosses a window)
-        f.behind = Cfg.pileOnWindows && li == 0     // the far layer passes behind windows down to the bottom of the screen
+        f.behind = Cfg.pileOnWindows && li == 0     // the far layer passes over windows down to the bottom of the screen
         f.isClump = false
         f.ignoreID = -1
         f.size = CGFloat.random(in: L.size)
@@ -1604,9 +1604,10 @@ final class SnowScene: SKScene {
                 }
             }
             if !gone {
-                // Snow over a window is behind it: hidden, but it keeps falling to the bottom of the screen
+                // Snow over a window is behind it and hidden. Far flakes stay visible over windows
+                // (faint, in front) and keep falling to the bottom of the screen
                 var hide = false
-                if !f.inFront {
+                if !f.inFront && !f.behind {
                     for item in order where item.rect.contains(p) { hide = true; break }
                 }
                 if f.node.isHidden != hide { f.node.isHidden = hide }
