@@ -400,6 +400,10 @@ final class SnowScene: SKScene {
     var pool: [Flake] = []
     var piles: [Int: Pile] = [:]                 // window number -> snow on top of it
     var lastRect: [Int: CGRect] = [:]
+    var shrunk: Set<Int> = []                    // windows Mission Control has shrunk; their snow waits, hidden
+    /// Whether a mouse button is down. A window only counts as dragged or resized by hand while one is;
+    /// changes without one are macOS animations (Space swipes, Mission Control)
+    var buttonHeld: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
     var order: [(id: Int, rect: CGRect)] = []    // windows from front to back
     var ground: Pile?
     var tex: SKTexture?
@@ -1446,12 +1450,34 @@ final class SnowScene: SKScene {
             pile.remove()
             piles[id] = nil
             lastRect[id] = nil
+            shrunk.remove(id)
         }
 
         for item in newOrder {
             let id = item.id, r = item.rect
             if let pile = piles[id], let old = lastRect[id] {
                 let same = { (a: CGFloat, b: CGFloat) in abs(a - b) < 0.5 }
+                let changed = !(same(old.minX, r.minX) && same(old.minY, r.minY) && same(old.width, r.width) && same(old.height, r.height))
+                if !changed { shrunk.remove(id) }
+                if changed && !buttonHeld() {
+                    if same(old.width, r.width) && same(old.height, r.height) {
+                        // Slid by macOS (Space swipe) or a keyboard shortcut: the snow and its snowballs ride along
+                        let dx = r.minX - old.minX, dy = r.maxY - old.maxY
+                        pile.minX = r.minX
+                        pile.topY = r.maxY
+                        pile.dirty = true
+                        for b in balls where b.pile === pile { b.x += dx; b.y += dy }
+                        lastRect[id] = r
+                        shrunk.remove(id)
+                        continue
+                    }
+                    if r.width < old.width && abs(r.width / r.height - old.width / old.height) < 0.01 * old.width / old.height {
+                        // Scaled down evenly: Mission Control. Keep the snow, hidden, until the window is back
+                        shrunk.insert(id)
+                        continue
+                    }
+                }
+                shrunk.remove(id)
                 let sideFixed = same(old.minX, r.minX) || same(old.maxX, r.maxX)
                 let topOnly = same(old.minY, r.minY)       // bottom edge stayed: only the top edge moved
                 if !same(old.width, r.width) && sideFixed && (same(old.maxY, r.maxY) || topOnly) {
@@ -1539,7 +1565,7 @@ final class SnowScene: SKScene {
             guard let p = piles[item.id] else { continue }
             for c in 0..<p.count {
                 let pt = CGPoint(x: p.colX(c), y: p.topY + 1)
-                var o = pt.x < 0 || pt.x > size.width || pt.y > size.height
+                var o = shrunk.contains(item.id) || pt.x < 0 || pt.x > size.width || pt.y > size.height
                 if !o {
                     for j in 0..<i where order[j].rect.contains(pt) { o = true; break }
                 }

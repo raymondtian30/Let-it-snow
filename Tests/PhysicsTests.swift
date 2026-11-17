@@ -365,6 +365,7 @@ import SpriteKit
         let onWindow = w.total
         let groundBefore = g.total
         rect.origin.x += 60
+        sc.buttonHeld = { true }                       // dragged with the mouse
         sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20)
         check(sc.piles[7]!.total < 0.5, "moving the window knocks its snow off")
         for _ in 0..<(20 * 20) { sc.stepFlakes(1.0 / 20); sc.applyWindows([(id: 7, rect: rect)], dt: 1.0 / 20) }
@@ -417,6 +418,7 @@ import SpriteKit
     do {
         let a = CGRect(x: 200, y: 200, width: 600, height: 300)
         let (sc, w) = windowScene(a, depth: 8)
+        sc.buttonHeld = { true }                       // resized with the mouse
         let full = w.total
         let clumpsBefore = sc.flakes.filter { $0.isClump }.count
         sc.applyWindows([(id: 1, rect: CGRect(x: 200, y: 200, width: 400, height: 300))], dt: 1.0 / 30)
@@ -497,5 +499,68 @@ import SpriteKit
         for _ in 0..<240 { sc.stepBalls(dt) }
         check(!base.falling && base.pile != nil, "let go, it lands")
         check(head.below === mid && mid.below === base && head.decor != nil, "still a snowman after landing")
+    }
+
+    // 30. Switching Spaces with a swipe slides windows off and back without the mouse: the snow stays
+    do {
+        let a = CGRect(x: 50, y: 0, width: 1100, height: 600)
+        let (sc, w) = windowScene(a, depth: 8)
+        sc.buttonHeld = { false }
+        sc.windowExists = { _ in true }
+        let ball = newBall(sc, w, x: 300, r: 10)
+        for _ in 0..<5 { sc.stepBalls(dt) }
+        let before = w.total
+        let clumps = { sc.flakes.filter { $0.isClump }.count }
+        let c0 = clumps()
+        let ballOffset = ball.x - a.minX
+        // Slide out to the right, frame by frame (as macOS reports it), then gone
+        for k in 1...30 {
+            let x = a.minX + CGFloat(k * k) * 1.6
+            sc.applyWindows([(id: 1, rect: CGRect(x: x, y: a.minY, width: a.width, height: a.height))], dt: dt)
+            sc.stepBalls(dt)
+        }
+        check(clumps() == c0, "sliding a window off with a Space swipe doesn't knock its snow off")
+        check(sc.piles[1] === w && abs(w.total - before) < before * 0.005, "the snow slides along with it")
+        check(!ball.falling && ball.pile === w && abs(ball.x - w.minX - ballOffset) < 2, "and so does a snowball on it")
+        for _ in 0..<10 { sc.applyWindows([], dt: dt); sc.stepBalls(dt) }
+        // Swipe back: it slides in from the right to where it was
+        for k in stride(from: 30, through: 0, by: -1) {
+            let x = a.minX + CGFloat(k * k) * 1.6
+            sc.applyWindows([(id: 1, rect: CGRect(x: x, y: a.minY, width: a.width, height: a.height))], dt: dt)
+            sc.stepBalls(dt)
+        }
+        check(clumps() == c0 && abs(w.total - before) < before * 0.005, "after swiping back all the snow is still there")
+        check(abs(w.minX - a.minX) < 0.01 && !w.occ.contains(true), "in its place and showing")
+        check(!ball.falling && abs(ball.x - a.minX - ballOffset) < 2, "the snowball too")
+    }
+
+    // 31. Mission Control shrinks windows and puts them back: the snow is hidden meanwhile, then returns
+    do {
+        let a = CGRect(x: 50, y: 0, width: 1100, height: 600)
+        let (sc, w) = windowScene(a, depth: 8)
+        sc.buttonHeld = { false }
+        let before = w.total
+        let c0 = sc.flakes.filter { $0.isClump }.count
+        func scaled(_ s: CGFloat) -> CGRect {
+            CGRect(x: a.midX - a.width * s / 2, y: a.midY - a.height * s / 2, width: a.width * s, height: a.height * s)
+        }
+        for k in 1...10 { sc.applyWindows([(id: 1, rect: scaled(1 - CGFloat(k) * 0.015))], dt: dt) }
+        for _ in 0..<40 { sc.applyWindows([(id: 1, rect: scaled(0.85))], dt: dt) }   // Mission Control stays open
+        check(sc.flakes.filter { $0.isClump }.count == c0, "Mission Control doesn't knock the snow off")
+        check(sc.piles[1] === w && !w.occ.contains(false), "the snow is hidden while the window is shrunk")
+        for k in stride(from: 9, through: 0, by: -1) { sc.applyWindows([(id: 1, rect: scaled(1 - CGFloat(k) * 0.015))], dt: dt) }
+        check(sc.piles[1] === w && abs(w.total - before) < before * 0.005 && !w.occ.contains(true), "closing Mission Control brings the snow back")
+    }
+
+    // 32. A window zoomed with its green button (no mouse held, new shape) drops its snow like a hand resize
+    do {
+        let a = CGRect(x: 200, y: 200, width: 500, height: 300)
+        let (sc, _) = windowScene(a, depth: 8)
+        sc.buttonHeld = { false }
+        let c0 = sc.flakes.filter { $0.isClump }.count
+        let z = CGRect(x: 0, y: 30, width: 1200, height: 650)
+        for _ in 0..<5 { sc.applyWindows([(id: 1, rect: z)], dt: dt) }
+        check(sc.flakes.filter { $0.isClump }.count > c0, "zooming a window knocks its snow off")
+        check((sc.piles[1]?.total ?? 1) < 0.5 && abs((sc.piles[1]?.topY ?? 0) - z.maxY) < 0.01, "and a fresh pile starts on the new top")
     }
 }
